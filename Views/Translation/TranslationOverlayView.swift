@@ -17,12 +17,19 @@ final class TranslationOverlayState: ObservableObject {
     }
 }
 
-/// The visible layer of the in-place translation overlay: the composited
-/// screenshot at full panel size, plus a floating toolbar in the top-right
-/// corner that lets the user save the composite, copy it, or close the
-/// overlay. The whole surface is also a drag handle for repositioning — so
-/// the user can move it off the original text to compare, or anywhere else.
+/// The visible layer of the in-place translation overlay: a floating toolbar
+/// stacked above the composited screenshot. The toolbar lives in its own row
+/// so it never obscures the translated content. The whole surface is also a
+/// drag handle for repositioning — so the user can move it off the original
+/// text to compare, or anywhere else.
 struct TranslationOverlayView: View {
+    /// Reserved height for the toolbar row above the image. Sized for the
+    /// tallest phase (loading) so the image stays at exactly the captured
+    /// area's size across phase transitions.
+    static let toolbarRowHeight: CGFloat = 48
+    /// Vertical gap between the toolbar row and the image.
+    static let toolbarRowSpacing: CGFloat = 4
+
     @ObservedObject var state: TranslationOverlayState
     let onRetry: () -> Void
     let onSave: () -> Void
@@ -30,12 +37,15 @@ struct TranslationOverlayView: View {
     let onClose: () -> Void
 
     var body: some View {
-        Image(nsImage: state.image)
-            .resizable()
-            .interpolation(.high)
-            .aspectRatio(contentMode: .fill)
-            .overlay(alignment: .topTrailing) { toolbar }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        VStack(alignment: .trailing, spacing: Self.toolbarRowSpacing) {
+            toolbar
+                .frame(height: Self.toolbarRowHeight)
+            Image(nsImage: state.image)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fill)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
     }
 
     @ViewBuilder
@@ -55,7 +65,6 @@ struct TranslationOverlayView: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(.white)
             )
-            .padding(8)
 
         case .loaded:
             HStack(spacing: 4) {
@@ -69,7 +78,6 @@ struct TranslationOverlayView: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(.white)
             )
-            .padding(8)
 
         case .failed(let message):
             HStack(spacing: 4) {
@@ -93,7 +101,6 @@ struct TranslationOverlayView: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(.white)
             )
-            .padding(8)
         }
     }
 

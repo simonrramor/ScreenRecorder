@@ -39,11 +39,20 @@ final class TranslationOverlayController {
             onClose: { [weak self] in self?.close() }
         )
 
+        // Reserve space above the image for the toolbar row so the buttons
+        // never overlap the translated content.
+        let chromeHeight = TranslationOverlayView.toolbarRowHeight
+            + TranslationOverlayView.toolbarRowSpacing
+        let panelSize = NSSize(
+            width: area.size.width,
+            height: area.size.height + chromeHeight
+        )
+
         let hosting = NSHostingView(rootView: view)
-        hosting.frame = NSRect(origin: .zero, size: area.size)
+        hosting.frame = NSRect(origin: .zero, size: panelSize)
 
         let panel = OverlayPanel(
-            contentRect: NSRect(origin: .zero, size: area.size),
+            contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -106,11 +115,14 @@ final class TranslationOverlayController {
 
     private func position(panel: NSPanel, at area: CGRect) {
         let mainScreenHeight = NSScreen.screens.first?.frame.height ?? 0
+        // Anchor the panel's bottom-left at the area's bottom-left in Cocoa
+        // coords so the image row keeps lining up with the original capture
+        // rect; the toolbar row floats in the extra height above it.
         let cocoaOrigin = NSPoint(
             x: area.origin.x,
             y: mainScreenHeight - area.origin.y - area.height
         )
-        panel.setFrame(NSRect(origin: cocoaOrigin, size: area.size), display: true)
+        panel.setFrame(NSRect(origin: cocoaOrigin, size: panel.frame.size), display: true)
     }
 
     private func installLocalEventMonitor() {
