@@ -418,7 +418,9 @@ class AppState: ObservableObject {
     func takeAreaScreenshot(area: CGRect) async {
         guard await ensureReadyForCapture() else { return }
 
-        let display = configuration.selectedDisplay ?? captureEngine.availableDisplays.first
+        let display = captureEngine.displayContaining(area)
+            ?? configuration.selectedDisplay
+            ?? captureEngine.availableDisplays.first
         if let image = await screenshotService.captureArea(display: display, area: area) {
             copyImageToClipboard(image)
         } else if let error = screenshotService.errorMessage {
@@ -464,7 +466,9 @@ class AppState: ObservableObject {
     }
 
     private func performTextCapture(area: CGRect) async {
-        let display = configuration.selectedDisplay ?? captureEngine.availableDisplays.first
+        let display = captureEngine.displayContaining(area)
+            ?? configuration.selectedDisplay
+            ?? captureEngine.availableDisplays.first
         if let text = await textCaptureService.captureAndRecognizeArea(display: display, area: area) {
             TextCaptureService.copyToClipboard(text)
             showSaveNotification("Text copied to clipboard")
@@ -487,7 +491,9 @@ class AppState: ObservableObject {
         // Capture the screen area and run OCR first so we have an image to
         // drop into the overlay immediately — perceived latency stays tiny
         // while the translation step runs.
-        let display = configuration.selectedDisplay ?? captureEngine.availableDisplays.first
+        let display = captureEngine.displayContaining(area)
+            ?? configuration.selectedDisplay
+            ?? captureEngine.availableDisplays.first
         guard let (cgImage, observations) = await textCaptureService.captureObservations(display: display, area: area) else {
             showErrorNotification(textCaptureService.errorMessage ?? "Failed to capture the selected area")
             return

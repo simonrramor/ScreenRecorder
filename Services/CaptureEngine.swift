@@ -236,7 +236,7 @@ class CaptureEngine: NSObject, ObservableObject {
     /// global-coordinate rect. Area selection delivers rects in global CG
     /// space, so we have to look up the right display before building the
     /// stream's content filter and source rect.
-    private func displayContaining(_ area: CGRect) -> SCDisplay? {
+    func displayContaining(_ area: CGRect) -> SCDisplay? {
         availableDisplays.first { display in
             CGDisplayBounds(display.displayID).intersects(area)
         }
