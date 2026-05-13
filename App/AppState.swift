@@ -300,10 +300,10 @@ class AppState: ObservableObject {
 
     private func showAreaSelection() {
         areaSelectionController.showOverlay(
-            onSelected: { [weak self] rect in
+            onSelected: { [weak self] rect, overlayIDs in
                 guard let self = self else { return }
                 Task { @MainActor in
-                    await self.onAreaSelected(rect)
+                    await self.onAreaSelected(rect, overlayWindowIDs: overlayIDs)
                 }
             },
             onCancelled: { [weak self] in
@@ -314,16 +314,20 @@ class AppState: ObservableObject {
         )
     }
 
-    func onAreaSelected(_ rect: CGRect) async {
-        log.info("onAreaSelected rect=\(String(describing:rect), privacy: .public) action=\(String(describing: self.pendingCaptureAction), privacy: .public)")
+    func onAreaSelected(_ rect: CGRect, overlayWindowIDs: [CGWindowID] = []) async {
+        log.info("onAreaSelected rect=\(String(describing:rect), privacy: .public) action=\(String(describing: self.pendingCaptureAction), privacy: .public) overlayIDs=\(overlayWindowIDs.count, privacy: .public)")
         configuration.selectedArea = rect
 
         if let action = pendingCaptureAction {
             pendingCaptureAction = nil
 
-            // Brief delay to let the overlay window fully disappear from the screen
-            // before capturing, so it doesn't appear in the screenshot
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            // The overlay was already hidden (alpha=0) in
+            // `hideOverlaysPreservingForCapture`. We keep the NSWindow alive
+            // so SCShareableContent still enumerates it and `excludingApplications:
+            // [ownApp]` + `exceptingWindows: <our non-overlay windows>` can
+            // surgically exclude only the overlay from the captured frame.
+            // After the capture finishes, finalizeClose() actually closes it.
+            defer { areaSelectionController.finalizeClose() }
 
             switch action {
             case .recording:
@@ -331,14 +335,15 @@ class AppState: ObservableObject {
                 recordingAreaOverlayController.showOverlay(recordingRect: rect)
                 await performCountdownAndRecord()
             case .screenshot:
-                await takeAreaScreenshot(area: rect)
+                await takeAreaScreenshot(area: rect, excludingWindowIDs: overlayWindowIDs)
             case .textCapture:
-                await performTextCapture(area: rect)
+                await performTextCapture(area: rect, excludingWindowIDs: overlayWindowIDs)
             case .translateCapture:
-                await performTranslateCapture(area: rect)
+                await performTranslateCapture(area: rect, excludingWindowIDs: overlayWindowIDs)
             }
         } else {
             log.error("onAreaSelected fired with no pendingCaptureAction — silent exit")
+            areaSelectionController.finalizeClose()
         }
     }
 
@@ -420,8 +425,8 @@ class AppState: ObservableObject {
         }
     }
 
-    func takeAreaScreenshot(area: CGRect) async {
-        log.info("takeAreaScreenshot enter area=\(String(describing:area), privacy: .public)")
+    func takeAreaScreenshot(area: CGRect, excludingWindowIDs: [CGWindowID] = []) async {
+        log.info("takeAreaScreenshot enter area=\(String(describing:area), privacy: .public) excludeIDs=\(excludingWindowIDs.count, privacy: .public)")
         guard await ensureReadyForCapture() else {
             log.error("takeAreaScreenshot bailed: ensureReadyForCapture returned false")
             return
@@ -431,7 +436,7 @@ class AppState: ObservableObject {
             ?? configuration.selectedDisplay
             ?? captureEngine.availableDisplays.first
         log.info("takeAreaScreenshot display=\(display?.displayID ?? 0, privacy: .public) (nil=\(display == nil, privacy: .public))")
-        if let image = await screenshotService.captureArea(display: display, area: area) {
+        if let image = await screenshotService.captureArea(display: display, area: area, excludingWindowIDs: excludingWindowIDs) {
             log.info("takeAreaScreenshot got image size=\(String(describing:image.size), privacy: .public)")
             copyImageToClipboard(image)
         } else if let error = screenshotService.errorMessage {
@@ -479,11 +484,11 @@ class AppState: ObservableObject {
         showAreaSelection()
     }
 
-    private func performTextCapture(area: CGRect) async {
+    private func performTextCapture(area: CGRect, excludingWindowIDs: [CGWindowID] = []) async {
         let display = captureEngine.displayContaining(area)
             ?? configuration.selectedDisplay
             ?? captureEngine.availableDisplays.first
-        if let text = await textCaptureService.captureAndRecognizeArea(display: display, area: area) {
+        if let text = await textCaptureService.captureAndRecognizeArea(display: display, area: area, excludingWindowIDs: excludingWindowIDs) {
             TextCaptureService.copyToClipboard(text)
             showSaveNotification("Text copied to clipboard")
         } else {
@@ -501,14 +506,14 @@ class AppState: ObservableObject {
         showAreaSelection()
     }
 
-    private func performTranslateCapture(area: CGRect) async {
+    private func performTranslateCapture(area: CGRect, excludingWindowIDs: [CGWindowID] = []) async {
         // Capture the screen area and run OCR first so we have an image to
         // drop into the overlay immediately — perceived latency stays tiny
         // while the translation step runs.
         let display = captureEngine.displayContaining(area)
             ?? configuration.selectedDisplay
             ?? captureEngine.availableDisplays.first
-        guard let (cgImage, observations) = await textCaptureService.captureObservations(display: display, area: area) else {
+        guard let (cgImage, observations) = await textCaptureService.captureObservations(display: display, area: area, excludingWindowIDs: excludingWindowIDs) else {
             showErrorNotification(textCaptureService.errorMessage ?? "Failed to capture the selected area")
             return
         }

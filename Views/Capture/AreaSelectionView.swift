@@ -191,7 +191,7 @@ class AreaSelectionWindowController {
     }
 
     @MainActor
-    func showOverlay(onSelected: @escaping (CGRect) -> Void, onCancelled: @escaping () -> Void) {
+    func showOverlay(onSelected: @escaping (CGRect, [CGWindowID]) -> Void, onCancelled: @escaping () -> Void) {
         closeOverlay()
 
         escapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -226,9 +226,10 @@ class AreaSelectionWindowController {
 
             let selectionView = AreaSelectionNSView(frame: screen.frame)
             selectionView.onAreaSelected = { [weak self] rect in
-                let screenRect = self?.convertToScreenCoordinates(rect, in: screen) ?? rect
-                onSelected(screenRect)
-                self?.closeOverlay()
+                guard let self = self else { return }
+                let screenRect = self.convertToScreenCoordinates(rect, in: screen)
+                let ids = self.hideOverlaysPreservingForCapture()
+                onSelected(screenRect, ids)
             }
             selectionView.onCancelled = { [weak self] in
                 onCancelled()
@@ -251,24 +252,37 @@ class AreaSelectionWindowController {
         }
     }
 
-    func closeOverlay() {
+    /// Hides the overlay windows from the user (alpha=0, ignore further input)
+    /// while keeping them alive so `SCShareableContent` still enumerates them.
+    /// The capture pipeline needs them in its window list to pass into
+    /// `SCContentFilter.exceptingWindows`. Call `finalizeClose()` after the
+    /// capture completes.
+    func hideOverlaysPreservingForCapture() -> [CGWindowID] {
         removeMonitors()
+        let ids = windows.map { CGWindowID($0.windowNumber) }
+        for window in windows {
+            window.ignoresMouseEvents = true
+            window.alphaValue = 0
+        }
+        CATransaction.flush()
+        return ids
+    }
 
-        let windowsToClose = windows
+    /// Fully closes any pending overlay windows. Safe to call when none exist.
+    func finalizeClose() {
+        let pending = windows
         windows.removeAll()
-
-        for window in windowsToClose {
-            // alphaValue = 0 makes the window's contents disappear in the
-            // current compositor frame — orderOut alone is queued and can
-            // still be on-screen when SCScreenshotManager grabs the next
-            // frame for an area screenshot.
+        for window in pending {
             window.alphaValue = 0
             window.orderOut(nil)
             window.close()
         }
-        // Force WindowServer to commit the alpha/orderOut changes before
-        // the capture pipeline reads back the screen.
         CATransaction.flush()
+    }
+
+    func closeOverlay() {
+        removeMonitors()
+        finalizeClose()
     }
 
     private func removeMonitors() {

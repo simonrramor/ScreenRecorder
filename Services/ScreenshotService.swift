@@ -72,12 +72,12 @@ class ScreenshotService: ObservableObject {
         }
     }
 
-    func captureArea(display: SCDisplay?, area: CGRect) async -> NSImage? {
+    func captureArea(display: SCDisplay?, area: CGRect, excludingWindowIDs: [CGWindowID] = []) async -> NSImage? {
         errorMessage = nil
-        log.info("captureArea enter displayID=\(display?.displayID ?? 0, privacy: .public) area=\(String(describing:area), privacy: .public)")
+        log.info("captureArea enter displayID=\(display?.displayID ?? 0, privacy: .public) area=\(String(describing:area), privacy: .public) excludeIDs=\(excludingWindowIDs.count, privacy: .public)")
 
         do {
-            let cgImage = try await Self.captureAreaCGImage(display: display, area: area)
+            let cgImage = try await Self.captureAreaCGImage(display: display, area: area, excludingWindowIDs: excludingWindowIDs)
             log.info("captureArea got cgImage w=\(cgImage.width, privacy: .public) h=\(cgImage.height, privacy: .public)")
             let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: area.width, height: area.height))
             lastScreenshot = nsImage
@@ -93,12 +93,12 @@ class ScreenshotService: ObservableObject {
     /// area-screenshot path and the OCR/translation pipeline so neither has to
     /// touch the deprecated CGWindowListCreateImage (which triggers monthly
     /// permission re-prompts on macOS 15+).
-    static func captureAreaCGImage(display: SCDisplay?, area: CGRect) async throws -> CGImage {
+    static func captureAreaCGImage(display: SCDisplay?, area: CGRect, excludingWindowIDs: [CGWindowID] = []) async throws -> CGImage {
         guard let display = display else {
             throw NSError(domain: "ScreenshotService", code: 1, userInfo: [NSLocalizedDescriptionKey: "No display available"])
         }
 
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let filter = try await Self.makeAreaCaptureFilter(display: display, excludingWindowIDs: excludingWindowIDs)
         let config = SCStreamConfiguration()
         config.width = Int(display.width) * 2
         config.height = Int(display.height) * 2
@@ -125,6 +125,38 @@ class ScreenshotService: ObservableObject {
         }
 
         return cropped
+    }
+
+    /// Builds an `SCContentFilter` for an area capture. When `excludingWindowIDs`
+    /// is non-empty (typically the area-selection overlay window's id), we
+    /// exclude all of our app's windows but add back every Captr window that
+    /// isn't in `excludingWindowIDs` — so the overlay never appears in the
+    /// captured frame, while Captr's main UI, annotation editor, etc. still do.
+    private static func makeAreaCaptureFilter(display: SCDisplay, excludingWindowIDs: [CGWindowID]) async throws -> SCContentFilter {
+        guard !excludingWindowIDs.isEmpty,
+              let ownBundleID = Bundle.main.bundleIdentifier else {
+            return SCContentFilter(display: display, excludingWindows: [])
+        }
+
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: false
+        )
+        guard let ownApp = content.applications.first(where: { $0.bundleIdentifier == ownBundleID }) else {
+            // Couldn't find our SCRunningApplication — fall back to the
+            // non-excluding filter rather than capturing nothing.
+            return SCContentFilter(display: display, excludingWindows: [])
+        }
+
+        let excludeSet = Set(excludingWindowIDs)
+        let nonOverlayOwnWindows = content.windows.filter {
+            $0.owningApplication?.bundleIdentifier == ownBundleID && !excludeSet.contains($0.windowID)
+        }
+        return SCContentFilter(
+            display: display,
+            excludingApplications: [ownApp],
+            exceptingWindows: nonOverlayOwnWindows
+        )
     }
 
     func saveScreenshot(_ image: NSImage, annotated: Bool = false) -> URL? {

@@ -8,10 +8,10 @@ import ScreenCaptureKit
 class TextCaptureService: ObservableObject {
     @Published var errorMessage: String?
 
-    func captureAndRecognizeArea(display: SCDisplay?, area: CGRect) async -> String? {
+    func captureAndRecognizeArea(display: SCDisplay?, area: CGRect, excludingWindowIDs: [CGWindowID] = []) async -> String? {
         errorMessage = nil
 
-        guard let cgImage = await captureScreenArea(display: display, area: area) else {
+        guard let cgImage = await captureScreenArea(display: display, area: area, excludingWindowIDs: excludingWindowIDs) else {
             return nil
         }
 
@@ -27,10 +27,10 @@ class TextCaptureService: ObservableObject {
     /// Captures the given screen area and returns the raw Vision observations
     /// alongside the source CGImage. Used by the in-place translation
     /// pipeline which needs per-segment bounding boxes, not assembled text.
-    func captureObservations(display: SCDisplay?, area: CGRect) async -> (CGImage, [VNRecognizedTextObservation])? {
+    func captureObservations(display: SCDisplay?, area: CGRect, excludingWindowIDs: [CGWindowID] = []) async -> (CGImage, [VNRecognizedTextObservation])? {
         errorMessage = nil
 
-        guard let cgImage = await captureScreenArea(display: display, area: area) else {
+        guard let cgImage = await captureScreenArea(display: display, area: area, excludingWindowIDs: excludingWindowIDs) else {
             return nil
         }
 
@@ -38,9 +38,9 @@ class TextCaptureService: ObservableObject {
         return (cgImage, observations)
     }
 
-    private func captureScreenArea(display: SCDisplay?, area: CGRect) async -> CGImage? {
+    private func captureScreenArea(display: SCDisplay?, area: CGRect, excludingWindowIDs: [CGWindowID]) async -> CGImage? {
         do {
-            return try await ScreenshotService.captureAreaCGImage(display: display, area: area)
+            return try await ScreenshotService.captureAreaCGImage(display: display, area: area, excludingWindowIDs: excludingWindowIDs)
         } catch {
             errorMessage = "Failed to capture the selected area: \(error.localizedDescription)"
             return nil
