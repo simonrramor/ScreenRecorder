@@ -228,11 +228,19 @@ class AreaSelectionWindowController {
             selectionView.onAreaSelected = { [weak self] rect in
                 let screenRect = self?.convertToScreenCoordinates(rect, in: screen) ?? rect
                 onSelected(screenRect)
-                self?.closeOverlay()
+                // Tear down on the next runloop pass. Calling close()/orderOut()
+                // from inside the originating window's contentView mouseUp leaves
+                // that panel on screen on multi-display setups — sibling panels
+                // disappear but the one we're dispatching from doesn't.
+                DispatchQueue.main.async { [weak self] in
+                    self?.closeOverlay()
+                }
             }
             selectionView.onCancelled = { [weak self] in
                 onCancelled()
-                self?.closeOverlay()
+                DispatchQueue.main.async { [weak self] in
+                    self?.closeOverlay()
+                }
             }
 
             window.contentView = selectionView
@@ -544,11 +552,18 @@ class WindowSelectionWindowController {
             let selectionView = WindowSelectionNSView(frame: screen.frame, screen: screen)
             selectionView.onWindowSelected = { [weak self] windowID in
                 onSelected(windowID)
-                self?.closeOverlay()
+                // Defer the close so it doesn't run inside the originating
+                // panel's contentView mouseDown — otherwise the picker panel
+                // on multi-display setups can stay on screen.
+                DispatchQueue.main.async { [weak self] in
+                    self?.closeOverlay()
+                }
             }
             selectionView.onCancelled = { [weak self] in
                 onCancelled()
-                self?.closeOverlay()
+                DispatchQueue.main.async { [weak self] in
+                    self?.closeOverlay()
+                }
             }
 
             panel.contentView = selectionView
