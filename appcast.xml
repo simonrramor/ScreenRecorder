@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.3.10</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Restore the Captr logo in the menu bar instead of the generic plus icon.\n- Request and verify screen capture permission before all screenshot modes.\n- Add system audio usage text and the audio input entitlement for recording permissions.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 13 May 2026 14:56:08 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.3.10/Captr.dmg"
+                       sparkle:version="20"
+                       sparkle:shortVersionString="1.3.10"
+                       sparkle:edSignature="iFwMYs22PWhv2AAFsavyb3Hv/VjQfVDYcSdhe6xNeYGdi10DUIp4cbRKS7202Yr68Vq0yXFtxWGxfIokLKnhBg=="
+                       length="2306044"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.3.9</title>
             <description><![CDATA[
                 <ul>
