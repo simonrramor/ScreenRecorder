@@ -2,6 +2,9 @@ import Foundation
 import ScreenCaptureKit
 import AppKit
 import CoreGraphics
+import OSLog
+
+private let log = Logger(subsystem: "com.captr.app", category: "screenshot")
 
 @MainActor
 class ScreenshotService: ObservableObject {
@@ -71,13 +74,16 @@ class ScreenshotService: ObservableObject {
 
     func captureArea(display: SCDisplay?, area: CGRect) async -> NSImage? {
         errorMessage = nil
+        log.info("captureArea enter displayID=\(display?.displayID ?? 0, privacy: .public) area=\(String(describing:area), privacy: .public)")
 
         do {
             let cgImage = try await Self.captureAreaCGImage(display: display, area: area)
+            log.info("captureArea got cgImage w=\(cgImage.width, privacy: .public) h=\(cgImage.height, privacy: .public)")
             let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: area.width, height: area.height))
             lastScreenshot = nsImage
             return nsImage
         } catch {
+            log.error("captureArea threw: \(error.localizedDescription, privacy: .public)")
             errorMessage = "Area screenshot failed: \(error.localizedDescription)"
             return nil
         }

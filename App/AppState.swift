@@ -4,6 +4,9 @@ import ScreenCaptureKit
 import Combine
 import NaturalLanguage
 import Translation
+import OSLog
+
+private let log = Logger(subsystem: "com.captr.app", category: "screenshot")
 
 @MainActor
 class AppState: ObservableObject {
@@ -312,6 +315,7 @@ class AppState: ObservableObject {
     }
 
     func onAreaSelected(_ rect: CGRect) async {
+        log.info("onAreaSelected rect=\(String(describing:rect), privacy: .public) action=\(String(describing: self.pendingCaptureAction), privacy: .public)")
         configuration.selectedArea = rect
 
         if let action = pendingCaptureAction {
@@ -333,6 +337,8 @@ class AppState: ObservableObject {
             case .translateCapture:
                 await performTranslateCapture(area: rect)
             }
+        } else {
+            log.error("onAreaSelected fired with no pendingCaptureAction — silent exit")
         }
     }
 
@@ -415,15 +421,24 @@ class AppState: ObservableObject {
     }
 
     func takeAreaScreenshot(area: CGRect) async {
-        guard await ensureReadyForCapture() else { return }
+        log.info("takeAreaScreenshot enter area=\(String(describing:area), privacy: .public)")
+        guard await ensureReadyForCapture() else {
+            log.error("takeAreaScreenshot bailed: ensureReadyForCapture returned false")
+            return
+        }
 
         let display = captureEngine.displayContaining(area)
             ?? configuration.selectedDisplay
             ?? captureEngine.availableDisplays.first
+        log.info("takeAreaScreenshot display=\(display?.displayID ?? 0, privacy: .public) (nil=\(display == nil, privacy: .public))")
         if let image = await screenshotService.captureArea(display: display, area: area) {
+            log.info("takeAreaScreenshot got image size=\(String(describing:image.size), privacy: .public)")
             copyImageToClipboard(image)
         } else if let error = screenshotService.errorMessage {
+            log.error("takeAreaScreenshot nil image, errorMessage=\(error, privacy: .public)")
             showErrorNotification(error)
+        } else {
+            log.error("takeAreaScreenshot nil image AND no errorMessage — silent exit")
         }
     }
 
@@ -613,7 +628,11 @@ class AppState: ObservableObject {
     }
 
     private func copyImageToClipboard(_ image: NSImage) {
+        let before = NSPasteboard.general.changeCount
+        log.info("copyImageToClipboard enter changeCount.before=\(before, privacy: .public)")
         ClipboardService.copyImage(image)
+        let after = NSPasteboard.general.changeCount
+        log.info("copyImageToClipboard done changeCount.after=\(after, privacy: .public) wrote=\(after > before, privacy: .public)")
         showSaveNotification("Screenshot copied to clipboard")
     }
 
