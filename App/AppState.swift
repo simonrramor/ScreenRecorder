@@ -162,14 +162,7 @@ class AppState: ObservableObject {
     func startDeviceMirroringWithRecording(device: ConnectedDevice) async {
         switch device.platform {
         case .iOS:
-            guard let udid = device.iosUDID else {
-                showErrorNotification("iOS device not available")
-                return
-            }
-            iosDeviceMirror.startMirroring(udid: udid, deviceName: device.name)
-            if iosDeviceMirror.isMirroring {
-                iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-            }
+            showErrorNotification("iOS device recording is not supported yet. Use Mirror to view the device and Screenshot to capture frames.")
 
         case .android:
             guard let mirror = androidDeviceMirror else {
@@ -222,6 +215,10 @@ class AppState: ObservableObject {
 
     func showSavedNotification(_ message: String) {
         showSaveNotification(message)
+    }
+
+    func showError(_ message: String) {
+        showErrorNotification(message)
     }
 
     // MARK: - Recording Actions

@@ -4,16 +4,12 @@ import AppKit
 struct AnnotationCanvasView: View {
     let image: NSImage
     @Binding var annotationState: AnnotationState
+    @Binding var canvasDisplaySize: CGSize
     @State private var currentItem: AnnotationItem?
-    @State private var imageSize: CGSize = .zero
 
     var body: some View {
         GeometryReader { geometry in
             let displaySize = calculateDisplaySize(for: image.size, in: geometry.size)
-            let offset = CGSize(
-                width: (geometry.size.width - displaySize.width) / 2,
-                height: (geometry.size.height - displaySize.height) / 2
-            )
 
             ZStack {
                 Color(nsColor: .windowBackgroundColor)
@@ -37,10 +33,7 @@ struct AnnotationCanvasView: View {
                 .gesture(
                     DragGesture(minimumDistance: 1)
                         .onChanged { value in
-                            let localPoint = CGPoint(
-                                x: value.location.x - offset.width,
-                                y: value.location.y - offset.height
-                            )
+                            let localPoint = boundedPoint(value.location, in: displaySize)
 
                             if currentItem == nil {
                                 var item = AnnotationItem(
@@ -48,10 +41,7 @@ struct AnnotationCanvasView: View {
                                     color: annotationState.currentColor,
                                     lineWidth: annotationState.currentLineWidth
                                 )
-                                let startLocal = CGPoint(
-                                    x: value.startLocation.x - offset.width,
-                                    y: value.startLocation.y - offset.height
-                                )
+                                let startLocal = boundedPoint(value.startLocation, in: displaySize)
                                 item.startPoint = startLocal
                                 item.points = [startLocal]
                                 currentItem = item
@@ -79,7 +69,10 @@ struct AnnotationCanvasView: View {
                 )
             }
             .onAppear {
-                imageSize = displaySize
+                canvasDisplaySize = displaySize
+            }
+            .onChange(of: geometry.size) { _, _ in
+                canvasDisplaySize = displaySize
             }
         }
     }
@@ -91,6 +84,13 @@ struct AnnotationCanvasView: View {
         return CGSize(
             width: imageSize.width * scale,
             height: imageSize.height * scale
+        )
+    }
+
+    private func boundedPoint(_ point: CGPoint, in size: CGSize) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, 0), size.width),
+            y: min(max(point.y, 0), size.height)
         )
     }
 
@@ -169,19 +169,45 @@ struct AnnotationCanvasView: View {
         }
     }
 
-    func renderAnnotatedImage() -> NSImage {
+    static func renderAnnotatedImage(image: NSImage, annotationState: AnnotationState, canvasSize: CGSize) -> NSImage {
         let size = image.size
         let result = NSImage(size: size)
 
+        guard canvasSize.width > 0, canvasSize.height > 0 else {
+            return image
+        }
+
+        let scaleX = size.width / canvasSize.width
+        let scaleY = size.height / canvasSize.height
+        let lineScale = max(scaleX, scaleY)
+
+        func imagePoint(from canvasPoint: CGPoint) -> CGPoint {
+            CGPoint(
+                x: canvasPoint.x * scaleX,
+                y: size.height - canvasPoint.y * scaleY
+            )
+        }
+
+        func imageRect(start: CGPoint, end: CGPoint) -> CGRect {
+            CGRect(
+                x: min(start.x, end.x) * scaleX,
+                y: size.height - max(start.y, end.y) * scaleY,
+                width: abs(end.x - start.x) * scaleX,
+                height: abs(end.y - start.y) * scaleY
+            )
+        }
+
         result.lockFocus()
+        defer { result.unlockFocus() }
 
         image.draw(in: NSRect(origin: .zero, size: size))
 
-        let context = NSGraphicsContext.current!.cgContext
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            return result
+        }
 
         for item in annotationState.items {
             context.setStrokeColor(NSColor(item.color).withAlphaComponent(item.opacity).cgColor)
-            context.setLineWidth(item.lineWidth)
             context.setLineCap(.round)
             context.setLineJoin(.round)
 
@@ -189,29 +215,25 @@ struct AnnotationCanvasView: View {
             case .pen, .highlighter:
                 guard item.points.count >= 2 else { continue }
                 let lw = item.tool == .highlighter ? item.lineWidth * 4 : item.lineWidth
-                context.setLineWidth(lw)
-                let scaleX = size.width / imageSize.width
-                let scaleY = size.height / imageSize.height
-                context.move(to: CGPoint(x: item.points[0].x * scaleX, y: size.height - item.points[0].y * scaleY))
+                context.setLineWidth(lw * lineScale)
+                context.move(to: imagePoint(from: item.points[0]))
                 for point in item.points.dropFirst() {
-                    context.addLine(to: CGPoint(x: point.x * scaleX, y: size.height - point.y * scaleY))
+                    context.addLine(to: imagePoint(from: point))
                 }
                 context.strokePath()
 
             case .line:
                 guard let start = item.startPoint, let end = item.endPoint else { continue }
-                let scaleX = size.width / imageSize.width
-                let scaleY = size.height / imageSize.height
-                context.move(to: CGPoint(x: start.x * scaleX, y: size.height - start.y * scaleY))
-                context.addLine(to: CGPoint(x: end.x * scaleX, y: size.height - end.y * scaleY))
+                context.setLineWidth(item.lineWidth * lineScale)
+                context.move(to: imagePoint(from: start))
+                context.addLine(to: imagePoint(from: end))
                 context.strokePath()
 
             case .arrow:
                 guard let start = item.startPoint, let end = item.endPoint else { continue }
-                let scaleX = size.width / imageSize.width
-                let scaleY = size.height / imageSize.height
-                let s = CGPoint(x: start.x * scaleX, y: size.height - start.y * scaleY)
-                let e = CGPoint(x: end.x * scaleX, y: size.height - end.y * scaleY)
+                context.setLineWidth(item.lineWidth * lineScale)
+                let s = imagePoint(from: start)
+                let e = imagePoint(from: end)
 
                 context.move(to: s)
                 context.addLine(to: e)
@@ -235,34 +257,18 @@ struct AnnotationCanvasView: View {
 
             case .rectangle:
                 guard let start = item.startPoint, let end = item.endPoint else { continue }
-                let scaleX = size.width / imageSize.width
-                let scaleY = size.height / imageSize.height
-                let rect = CGRect(
-                    x: min(start.x, end.x) * scaleX,
-                    y: size.height - max(start.y, end.y) * scaleY,
-                    width: abs(end.x - start.x) * scaleX,
-                    height: abs(end.y - start.y) * scaleY
-                )
-                context.stroke(rect)
+                context.setLineWidth(item.lineWidth * lineScale)
+                context.stroke(imageRect(start: start, end: end))
 
             case .ellipse:
                 guard let start = item.startPoint, let end = item.endPoint else { continue }
-                let scaleX = size.width / imageSize.width
-                let scaleY = size.height / imageSize.height
-                let rect = CGRect(
-                    x: min(start.x, end.x) * scaleX,
-                    y: size.height - max(start.y, end.y) * scaleY,
-                    width: abs(end.x - start.x) * scaleX,
-                    height: abs(end.y - start.y) * scaleY
-                )
-                context.strokeEllipse(in: rect)
+                context.setLineWidth(item.lineWidth * lineScale)
+                context.strokeEllipse(in: imageRect(start: start, end: end))
 
             case .text:
                 guard let start = item.startPoint, let text = item.text else { continue }
-                let scaleX = size.width / imageSize.width
-                let scaleY = size.height / imageSize.height
                 let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 18 * max(scaleX, scaleY), weight: .medium),
+                    .font: NSFont.systemFont(ofSize: 18 * lineScale, weight: .medium),
                     .foregroundColor: NSColor(item.color)
                 ]
                 let string = NSAttributedString(string: text, attributes: attrs)
@@ -270,7 +276,6 @@ struct AnnotationCanvasView: View {
             }
         }
 
-        result.unlockFocus()
         return result
     }
 }

@@ -325,20 +325,22 @@ struct DeviceCard: View {
                     }
                     .buttonStyle(.plain)
 
-                    Button(action: onMirrorRecord) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "record.circle")
-                                .font(.system(size: 10))
-                            Text("Record")
-                                .font(.system(size: 11, weight: .medium))
+                    if device.platform == .android {
+                        Button(action: onMirrorRecord) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "record.circle")
+                                    .font(.system(size: 10))
+                                Text("Record")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(Color.red.opacity(0.85))
+                            .foregroundColor(.white)
+                            .cornerRadius(6)
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .background(Color.red.opacity(0.85))
-                        .foregroundColor(.white)
-                        .cornerRadius(6)
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
 
                     Button(action: onScreenshot) {
                         Image(systemName: "camera")

@@ -36,7 +36,7 @@ class PermissionsManager: ObservableObject {
         case .authorized:
             hasMicrophonePermission = true
         case .notDetermined:
-            hasMicrophonePermission = await AVCaptureDevice.requestAccess(for: .audio)
+            hasMicrophonePermission = false
         default:
             hasMicrophonePermission = false
         }

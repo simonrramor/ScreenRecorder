@@ -27,3 +27,6 @@ xcuserdata/
 
 # XcodeGen can regenerate the project
 *.xcodeproj
+
+# Generated release artifacts
+dist/

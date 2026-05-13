@@ -180,9 +180,11 @@ class DeviceManager: ObservableObject {
                 ))
             }
 
+            let scannedAndroidDevices = androidDevices
+
             await MainActor.run { [weak self] in
                 let ios = self?.devices.filter { $0.platform == .iOS } ?? []
-                self?.devices = ios + androidDevices
+                self?.devices = ios + scannedAndroidDevices
             }
         }
     }

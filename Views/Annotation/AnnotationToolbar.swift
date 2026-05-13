@@ -160,34 +160,33 @@ struct AnnotationEditorView: View {
     let onSaveOriginal: () -> Void
     let onCancel: () -> Void
 
-    @State private var canvasView: AnnotationCanvasView?
+    @State private var canvasDisplaySize: CGSize = .zero
 
     var body: some View {
         VStack(spacing: 0) {
             AnnotationToolbar(
                 annotationState: $annotationState,
                 onSave: {
-                    if let canvas = canvasView {
-                        let annotatedImage = canvas.renderAnnotatedImage()
-                        onSave(annotatedImage)
-                    } else {
+                    if annotationState.items.isEmpty {
                         onSave(image)
+                    } else {
+                        let annotatedImage = AnnotationCanvasView.renderAnnotatedImage(
+                            image: image,
+                            annotationState: annotationState,
+                            canvasSize: canvasDisplaySize
+                        )
+                        onSave(annotatedImage)
                     }
                 },
                 onSaveWithoutAnnotation: onSaveOriginal,
                 onCancel: onCancel
             )
 
-            let canvas = AnnotationCanvasView(
+            AnnotationCanvasView(
                 image: image,
-                annotationState: $annotationState
+                annotationState: $annotationState,
+                canvasDisplaySize: $canvasDisplaySize
             )
-
-            canvas
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onAppear {
-                    canvasView = canvas
-                }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

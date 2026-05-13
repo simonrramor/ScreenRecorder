@@ -174,11 +174,7 @@ class IOSDeviceMirror: ObservableObject {
 
     func startRecording() {
         guard isMirroring, !isRecording else { return }
-        isRecording = true
-        recordingStartDate = Date()
-        startDurationTimer()
-        // Note: Video recording from screenshots is not supported for iOS mirroring.
-        // Screenshots can be taken individually.
+        errorMessage = "iOS device recording is not supported yet. Use screenshots to capture individual frames."
     }
 
     func stopRecording() async -> URL? {

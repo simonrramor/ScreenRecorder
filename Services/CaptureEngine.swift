@@ -457,13 +457,7 @@ class BufferWriter: @unchecked Sendable {
     }
 
     func finishWriting() async {
-        lock.lock()
-        guard !isFinished, sessionStarted else {
-            lock.unlock()
-            return
-        }
-        isFinished = true
-        lock.unlock()
+        guard markFinishedIfReady() else { return }
 
         videoInput.markAsFinished()
         audioInput?.markAsFinished()
@@ -471,6 +465,15 @@ class BufferWriter: @unchecked Sendable {
         if assetWriter.status == .writing {
             await assetWriter.finishWriting()
         }
+    }
+
+    private func markFinishedIfReady() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !isFinished, sessionStarted else { return false }
+        isFinished = true
+        return true
     }
 
     func cancelWriting() {

@@ -127,26 +127,30 @@ class DeviceMirrorWindow {
 
     private func startDisplayTimer(iosMirror: IOSDeviceMirror, imageView: NSImageView) {
         Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self, weak iosMirror, weak imageView] timer in
-            guard let self = self, self.isWindowOpen,
-                  let mirror = iosMirror, let iv = imageView else {
-                timer.invalidate()
-                return
-            }
-            if let frame = mirror.currentFrame {
-                iv.image = frame
+            Task { @MainActor in
+                guard let self = self, self.isWindowOpen,
+                      let mirror = iosMirror, let iv = imageView else {
+                    timer.invalidate()
+                    return
+                }
+                if let frame = mirror.currentFrame {
+                    iv.image = frame
+                }
             }
         }
     }
 
     private func startDisplayTimer(androidMirror: AndroidDeviceMirror, imageView: NSImageView) {
         Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self, weak androidMirror, weak imageView] timer in
-            guard let self = self, self.isWindowOpen,
-                  let mirror = androidMirror, let iv = imageView else {
-                timer.invalidate()
-                return
-            }
-            if let frame = mirror.currentFrame {
-                iv.image = frame
+            Task { @MainActor in
+                guard let self = self, self.isWindowOpen,
+                      let mirror = androidMirror, let iv = imageView else {
+                    timer.invalidate()
+                    return
+                }
+                if let frame = mirror.currentFrame {
+                    iv.image = frame
+                }
             }
         }
     }
@@ -199,17 +203,23 @@ class DeviceMirrorWindow {
             controlsView.addSubview(recentsBtn)
         }
 
-        let recordBtn = makeButton(title: "Record", x: 10, y: 8, color: .systemRed)
-        recordBtn.target = self
-        recordBtn.action = #selector(recordTapped(_:))
-        controlsView.addSubview(recordBtn)
+        var lowerXOffset: CGFloat = 10
 
-        let ssBtn = makeButton(title: "Screenshot", x: 105, y: 8, color: .systemBlue)
+        if !isIOS {
+            let recordBtn = makeButton(title: "Record", x: lowerXOffset, y: 8, color: .systemRed)
+            recordBtn.target = self
+            recordBtn.action = #selector(recordTapped(_:))
+            controlsView.addSubview(recordBtn)
+            lowerXOffset += 95
+        }
+
+        let ssBtn = makeButton(title: "Screenshot", x: lowerXOffset, y: 8, color: .systemBlue)
         ssBtn.target = self
         ssBtn.action = #selector(screenshotTapped(_:))
         controlsView.addSubview(ssBtn)
+        lowerXOffset += 105
 
-        let disconnectBtn = makeButton(title: "Disconnect", x: 210, y: 8, color: .systemGray)
+        let disconnectBtn = makeButton(title: "Disconnect", x: lowerXOffset, y: 8, color: .systemGray)
         disconnectBtn.target = self
         disconnectBtn.action = #selector(disconnectTapped(_:))
         controlsView.addSubview(disconnectBtn)
@@ -230,19 +240,8 @@ class DeviceMirrorWindow {
 
     @objc private func recordTapped(_ sender: NSButton) {
         if let mirror = iosMirror {
-            if mirror.isRecording {
-                Task {
-                    let url = await mirror.stopRecording()
-                    if let url = url {
-                        await appState?.mediaLibrary.addRecording(at: url)
-                        appState?.showSavedNotification("Device recording saved")
-                    }
-                }
-                sender.title = "Record"
-            } else {
-                mirror.startRecording()
-                sender.title = "Stop"
-            }
+            mirror.startRecording()
+            appState?.showError(mirror.errorMessage ?? "iOS device recording is not supported")
         } else if let mirror = androidMirror {
             if mirror.isRecording {
                 Task {

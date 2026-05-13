@@ -89,7 +89,6 @@ struct MenuBarView: View {
             MenuBarButton(icon: "macwindow", title: "Window") {
                 Task { await appState.startRecording(mode: .window) }
             }
-            .disabled(appState.captureEngine.configuration.selectedWindow == nil && appState.captureEngine.availableWindows.isEmpty)
 
             MenuBarButton(icon: "rectangle.dashed", title: "Selected Area") {
                 Task { await appState.startRecording(mode: .area) }
@@ -111,7 +110,7 @@ struct MenuBarView: View {
             }
 
             MenuBarButton(icon: "macwindow", title: "Window") {
-                // Opens window picker
+                Task { await appState.takeScreenshot(mode: .window) }
             }
 
             MenuBarButton(icon: "rectangle.dashed", title: "Selected Area") {

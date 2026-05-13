@@ -31,19 +31,11 @@ targets:
     type: application
     platform: macOS
     sources:
-      - path: .
-        excludes:
-          - "Resources/Assets.xcassets/AppIcon.appiconset"
-          - "*.xcodeproj"
-          - ".git"
-          - ".gitignore"
-          - ".claude"
-          - "project.yml"
-          - "DerivedData"
-          - "build"
-          - "CaptrTests"
-          - "Scripts"
-          - "*.dmg"
+      - path: App
+      - path: Models
+      - path: Services
+      - path: Utilities
+      - path: Views
     resources:
       - path: Resources/Assets.xcassets
       - path: Resources/ios_stream.py
