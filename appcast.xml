@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.3.6</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fix area screenshots showing the desktop wallpaper instead of Captr's own windows. v1.3.4's filter excluded every Captr window from area captures; the overlay-hiding the filter was guarding against is already handled by alphaValue=0 + orderOut + CATransaction.flush + a 150 ms sleep before capture.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 13 May 2026 09:23:35 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.3.6/Captr.dmg"
+                       sparkle:version="16"
+                       sparkle:shortVersionString="1.3.6"
+                       sparkle:edSignature="ORpiKOPD9N3Y10NbKH7vsOWLPdiy4qgQpMIzzTIAk42jod7SQCMlSRQu6cmPT9UGWGiRxkxwy+m4lyU0DJTSBg=="
+                       length="2326549"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.3.5</title>
             <description><![CDATA[
                 <p>Fix screen recording producing zero-byte files on macOS 26: the previous fix tried to strip ScreenCaptureKit's stereoscopic-disparity attachment off each frame, but the tag lives on the upstream IOSurface and can't be removed via CVBuffer or IOSurface APIs. AVAssetWriter then rejected every frame with err -16122 ("operation could not be completed"). Maintain a pixel-buffer pool, deep-copy each frame into a clean buffer, and append the copy instead.
