@@ -26,7 +26,7 @@ struct CaptrApp: App {
         .windowResizability(.contentSize)
         .defaultSize(width: 700, height: 52)
 
-        MenuBarExtra("Captr", systemImage: appState.captureEngine.state.isActive ? "plus.circle.fill" : "plus.circle") {
+        MenuBarExtra("Captr", image: "MenuBarIcon") {
             MenuBarView(updater: updaterController.updater)
                 .environmentObject(appState)
         }

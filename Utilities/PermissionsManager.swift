@@ -18,9 +18,11 @@ class PermissionsManager: ObservableObject {
         hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
     }
 
-    func requestScreenRecordingPermission() {
+    @discardableResult
+    func requestScreenRecordingPermission() -> Bool {
         if CGPreflightScreenCaptureAccess() {
             hasScreenRecordingPermission = true
+            return true
         } else {
             // This prompts the user once via the system dialog
             let granted = CGRequestScreenCaptureAccess()
@@ -28,6 +30,7 @@ class PermissionsManager: ObservableObject {
             if !granted {
                 openScreenRecordingSettings()
             }
+            return granted
         }
     }
 

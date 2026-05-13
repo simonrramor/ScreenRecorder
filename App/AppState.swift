@@ -365,20 +365,26 @@ class AppState: ObservableObject {
     // MARK: - Screenshot Actions
 
     private func ensureReadyForCapture() async -> Bool {
+        guard permissionsManager.requestScreenRecordingPermission() else {
+            showErrorNotification("Enable Screen & System Audio Recording for Captr in System Settings, then quit and reopen Captr.")
+            return false
+        }
+
         if captureEngine.availableDisplays.isEmpty {
             await captureEngine.refreshAvailableContent()
         }
         if captureEngine.availableDisplays.isEmpty {
-            showErrorNotification("No displays found. Please check screen recording permission in System Settings.")
+            showErrorNotification(captureEngine.errorMessage ?? "No displays found. Please check screen recording permission in System Settings.")
             return false
         }
         return true
     }
 
     func takeScreenshot(mode: CaptureMode) async {
+        guard await ensureReadyForCapture() else { return }
+
         switch mode {
         case .fullScreen:
-            guard await ensureReadyForCapture() else { return }
             await takeFullScreenScreenshot()
         case .window:
             pendingCaptureAction = .screenshot
@@ -590,9 +596,10 @@ class AppState: ObservableObject {
     }
 
     func captureScreenshot() async {
+        guard await ensureReadyForCapture() else { return }
+
         switch screenshotMode {
         case .fullScreen:
-            guard await ensureReadyForCapture() else { return }
             let display = configuration.selectedDisplay ?? captureEngine.availableDisplays.first
             if let image = await screenshotService.captureFullScreen(display: display) {
                 copyImageToClipboard(image)
