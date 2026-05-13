@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.3.7</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fix window screenshots and recordings with hover-to-select window targeting.\n- Fix annotation saving so drawn markup is included in exported screenshots.\n- Improve area capture, window capture, and device mirroring reliability.\n- Avoid unsupported iOS recording flows and unexpected microphone permission prompts.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 13 May 2026 13:34:47 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.3.7/Captr.dmg"
+                       sparkle:version="17"
+                       sparkle:shortVersionString="1.3.7"
+                       sparkle:edSignature="R+njV3brtPiT2wh93YN5B/4yeGdVJI5Zwlxf8zx7ny9YTDFRzihCTf2j/IH7LQ3E0MMOvF+m8UlGijyjwdDuDQ=="
+                       length="2272107"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.3.6</title>
             <description><![CDATA[
                 <ul>
