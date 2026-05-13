@@ -36,9 +36,10 @@ targets:
       - path: Services
       - path: Utilities
       - path: Views
-    resources:
       - path: Resources/Assets.xcassets
+        buildPhase: resources
       - path: Resources/ios_stream.py
+        buildPhase: resources
     dependencies:
       - package: Sparkle
     settings:
