@@ -98,7 +98,6 @@ class AppState: ObservableObject {
     func initialize() async {
         await permissionsManager.checkAllPermissions()
         await captureEngine.refreshAvailableContent()
-        await ScreenshotService.primeOwnApplicationCache()
         await mediaLibrary.loadLibrary()
         deviceManager.startMonitoring()
         setupAndroidMirror()
