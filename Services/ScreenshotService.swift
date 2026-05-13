@@ -8,23 +8,6 @@ class ScreenshotService: ObservableObject {
     @Published var lastScreenshot: NSImage?
     @Published var errorMessage: String?
 
-    private static var cachedOwnApp: SCRunningApplication?
-
-    /// Caches the SCRunningApplication for our own bundle so the area
-    /// screenshot path can build a content filter that always excludes our
-    /// own windows — even when no Captr window is on screen at capture time
-    /// (e.g. just after the area-selection overlay has closed).
-    static func primeOwnApplicationCache() async {
-        guard cachedOwnApp == nil else { return }
-        do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-            let ownBundleID = Bundle.main.bundleIdentifier
-            cachedOwnApp = content.applications.first { $0.bundleIdentifier == ownBundleID }
-        } catch {
-            // Fall back to the old per-call lookup if priming fails.
-        }
-    }
-
     func captureFullScreen(display: SCDisplay?) async -> NSImage? {
         errorMessage = nil
 
@@ -109,17 +92,7 @@ class ScreenshotService: ObservableObject {
             throw NSError(domain: "ScreenshotService", code: 1, userInfo: [NSLocalizedDescriptionKey: "No display available"])
         }
 
-        // Exclude our own app from the capture so transient overlays
-        // (the area-selection dim, recording bezel, etc.) never end up
-        // composited into the screenshot, regardless of whether the
-        // window server has finished hiding them.
-        await primeOwnApplicationCache()
-        let filter: SCContentFilter
-        if let ownApp = cachedOwnApp {
-            filter = SCContentFilter(display: display, excludingApplications: [ownApp], exceptingWindows: [])
-        } else {
-            filter = SCContentFilter(display: display, excludingWindows: [])
-        }
+        let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
         config.width = Int(display.width) * 2
         config.height = Int(display.height) * 2
