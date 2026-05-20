@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.3.11</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fix area screenshots on external monitors by clamping selected regions to the captured display before cropping.\n- Share screen-coordinate conversion across screenshot, recording, window selection, and translation overlay paths.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 20 May 2026 10:22:23 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.3.11/Captr.dmg"
+                       sparkle:version="21"
+                       sparkle:shortVersionString="1.3.11"
+                       sparkle:edSignature="rILnbnp/ZLziRcDs7JBljgpfBi8/dkCe4lsdv7nGAsBuKPIg+UDzm7ooQZvxfM2rrsV7nsCYlHMWgsv8+YkiAw=="
+                       length="2304762"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.3.10</title>
             <description><![CDATA[
                 <ul>
