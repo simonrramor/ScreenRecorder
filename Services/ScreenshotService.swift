@@ -105,14 +105,14 @@ class ScreenshotService: ObservableObject {
             configuration: config
         )
 
-        let displayOrigin = CGDisplayBounds(display.displayID).origin
-        let scale = CGFloat(fullImage.width) / CGFloat(display.width)
-        let cropRect = CGRect(
-            x: (area.origin.x - displayOrigin.x) * scale,
-            y: (area.origin.y - displayOrigin.y) * scale,
-            width: area.width * scale,
-            height: area.height * scale
-        )
+        let imageSize = CGSize(width: CGFloat(fullImage.width), height: CGFloat(fullImage.height))
+        guard let cropRect = ScreenGeometry.pixelCropRect(
+            for: area,
+            displayID: display.displayID,
+            imageSize: imageSize
+        ) else {
+            throw NSError(domain: "ScreenshotService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Selected area is outside the captured display"])
+        }
 
         guard let cropped = fullImage.cropping(to: cropRect) else {
             throw NSError(domain: "ScreenshotService", code: 2, userInfo: [NSLocalizedDescriptionKey: "crop out of bounds"])

@@ -80,8 +80,16 @@ class AreaSelectionNSView: NSView {
         )
     }
 
-    override func mouseDown(with event: NSEvent) {
+    private func clampedPoint(from event: NSEvent) -> CGPoint {
         let point = convert(event.locationInWindow, from: nil)
+        return CGPoint(
+            x: min(max(point.x, bounds.minX), bounds.maxX),
+            y: min(max(point.y, bounds.minY), bounds.maxY)
+        )
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = clampedPoint(from: event)
         startPoint = point
         currentPoint = point
         isDragging = true
@@ -91,12 +99,12 @@ class AreaSelectionNSView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        currentPoint = convert(event.locationInWindow, from: nil)
+        currentPoint = clampedPoint(from: event)
         updateSelectionDisplay()
     }
 
     override func mouseUp(with event: NSEvent) {
-        currentPoint = convert(event.locationInWindow, from: nil)
+        currentPoint = clampedPoint(from: event)
         isDragging = false
 
         if let rect = selectionRect, rect.width > 10, rect.height > 10 {
@@ -283,23 +291,7 @@ class AreaSelectionWindowController {
     }
 
     private func convertToScreenCoordinates(_ rect: CGRect, in screen: NSScreen) -> CGRect {
-        // NSView coordinates: origin at bottom-left of the screen window
-        // CGWindowListCreateImage uses CG global coordinates: origin at top-left of main display
-        // NSScreen.frame uses bottom-left origin (Cocoa), we need to convert to CG top-left origin
-        let mainScreenHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
-
-        // Convert the rect's position from view-local (bottom-left) to global CG (top-left)
-        // 1. Get the global Y of the rect's top edge in Cocoa coords
-        let globalCocoaTop = screen.frame.origin.y + rect.origin.y + rect.height
-        // 2. Flip to CG coords (top-left origin)
-        let cgY = mainScreenHeight - globalCocoaTop
-
-        return CGRect(
-            x: screen.frame.origin.x + rect.origin.x,
-            y: cgY,
-            width: rect.width,
-            height: rect.height
-        )
+        ScreenGeometry.cgRect(fromCocoaRect: rect, inScreenFrame: screen.frame)
     }
 }
 
@@ -401,22 +393,11 @@ class WindowSelectionNSView: NSView {
     }
 
     private func viewPointToCG(_ viewPoint: CGPoint) -> CGPoint {
-        let mainScreenHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
-        return CGPoint(
-            x: screen.frame.origin.x + viewPoint.x,
-            y: mainScreenHeight - (screen.frame.origin.y + viewPoint.y)
-        )
+        ScreenGeometry.cgPoint(fromCocoaPoint: viewPoint, inScreenFrame: screen.frame)
     }
 
     private func cgRectToView(_ cgRect: CGRect) -> CGRect {
-        let mainScreenHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
-        let cocoaY = mainScreenHeight - cgRect.origin.y - cgRect.height
-        return CGRect(
-            x: cgRect.origin.x - screen.frame.origin.x,
-            y: cocoaY - screen.frame.origin.y,
-            width: cgRect.width,
-            height: cgRect.height
-        )
+        ScreenGeometry.cocoaRect(fromCGRect: cgRect, inScreenFrame: screen.frame)
     }
 
     private func windowAtPoint(_ cgPoint: CGPoint) -> WindowInfo? {
@@ -636,14 +617,7 @@ class RecordingOverlayNSView: NSView {
         context.fill(bounds)
 
         // Convert from CG coordinates (top-left origin) to view coordinates (bottom-left origin)
-        let mainScreenHeight = NSScreen.screens.first?.frame.height ?? screenFrame.height
-        let cocoaGlobalY = mainScreenHeight - recordingRect.origin.y - recordingRect.height
-        let localRect = CGRect(
-            x: recordingRect.origin.x - screenFrame.origin.x,
-            y: cocoaGlobalY - screenFrame.origin.y,
-            width: recordingRect.width,
-            height: recordingRect.height
-        )
+        let localRect = ScreenGeometry.cocoaRect(fromCGRect: recordingRect, inScreenFrame: screenFrame)
 
         // Clear the recording area
         context.setBlendMode(.clear)

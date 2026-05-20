@@ -6,13 +6,12 @@ final class ScreenshotServiceTests: XCTestCase {
 
     // MARK: - errorMessage cleared on success
 
-    func testCaptureArea_success_clearsErrorMessage() async {
+    func testCaptureArea_clearsStaleErrorBeforeReportingFailure() async {
         let service = ScreenshotService()
         service.errorMessage = "stale error from previous capture"
 
-        // captureArea uses CGWindowListCreateImage which works without
-        // ScreenCaptureKit permissions for on-screen content.
-        // Use a small rect from the main display.
+        // Even when capture fails early, it should clear stale errors before
+        // reporting the new failure.
         let rect = CGRect(x: 0, y: 0, width: 10, height: 10)
         let _ = await service.captureArea(display: nil, area: rect)
 

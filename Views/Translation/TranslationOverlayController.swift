@@ -105,12 +105,8 @@ final class TranslationOverlayController {
     }
 
     private func position(panel: NSPanel, at area: CGRect) {
-        let mainScreenHeight = NSScreen.screens.first?.frame.height ?? 0
-        let cocoaOrigin = NSPoint(
-            x: area.origin.x,
-            y: mainScreenHeight - area.origin.y - area.height
-        )
-        panel.setFrame(NSRect(origin: cocoaOrigin, size: area.size), display: true)
+        let cocoaRect = ScreenGeometry.cocoaRect(fromCGRect: area)
+        panel.setFrame(NSRect(origin: cocoaRect.origin, size: area.size), display: true)
     }
 
     private func installLocalEventMonitor() {

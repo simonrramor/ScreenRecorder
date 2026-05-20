@@ -237,9 +237,7 @@ class CaptureEngine: NSObject, ObservableObject {
     /// space, so we have to look up the right display before building the
     /// stream's content filter and source rect.
     func displayContaining(_ area: CGRect) -> SCDisplay? {
-        availableDisplays.first { display in
-            CGDisplayBounds(display.displayID).intersects(area)
-        }
+        ScreenGeometry.bestDisplay(for: area, in: availableDisplays)
     }
 
     private func createStreamConfiguration() -> SCStreamConfiguration {
@@ -254,17 +252,11 @@ class CaptureEngine: NSObject, ObservableObject {
         case .area:
             if let area = configuration.selectedArea,
                let display = displayContaining(area) ?? configuration.selectedDisplay ?? availableDisplays.first {
-                let displayOrigin = CGDisplayBounds(display.displayID).origin
-                let localX = floor(area.origin.x - displayOrigin.x)
-                let localY = floor(area.origin.y - displayOrigin.y)
-                let localW = floor(area.width)
-                let localH = floor(area.height)
-                config.sourceRect = CGRect(x: localX, y: localY, width: localW, height: localH)
-                let scale = NSScreen.screens.first(where: {
-                    ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == display.displayID
-                })?.backingScaleFactor ?? 2.0
-                let pixW = Int(localW * scale)
-                let pixH = Int(localH * scale)
+                let localRect = ScreenGeometry.integralDisplayLocalRect(for: area, displayID: display.displayID) ?? .zero
+                config.sourceRect = localRect
+                let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
+                let pixW = Int(localRect.width * scale)
+                let pixH = Int(localRect.height * scale)
                 config.width = pixW - (pixW % 2)
                 config.height = pixH - (pixH % 2)
             } else if let display = configuration.selectedDisplay ?? availableDisplays.first {
