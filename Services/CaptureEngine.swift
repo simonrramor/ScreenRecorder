@@ -2,6 +2,7 @@ import Foundation
 import ScreenCaptureKit
 import AVFoundation
 import Combine
+import AppKit
 
 @MainActor
 class CaptureEngine: NSObject, ObservableObject {
@@ -24,14 +25,18 @@ class CaptureEngine: NSObject, ObservableObject {
     var configuration = CaptureConfiguration()
 
     func refreshAvailableContent() async {
+        errorMessage = nil
+
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             availableDisplays = content.displays
             availableWindows = content.windows.filter { $0.isOnScreen && $0.title?.isEmpty == false }
-            if configuration.selectedDisplay == nil {
-                configuration.selectedDisplay = content.displays.first
-            }
+            refreshSelectedCaptureTargets()
         } catch {
+            availableDisplays = []
+            availableWindows = []
+            configuration.selectedDisplay = nil
+            configuration.selectedWindow = nil
             errorMessage = "Failed to get screen content: \(error.localizedDescription)"
         }
     }
@@ -42,7 +47,7 @@ class CaptureEngine: NSObject, ObservableObject {
         errorMessage = nil
 
         do {
-            try await refreshIfNeeded()
+            await refreshAvailableContent()
 
             let filter = try createContentFilter()
             let streamConfig = createStreamConfiguration()
@@ -201,16 +206,23 @@ class CaptureEngine: NSObject, ObservableObject {
 
     // MARK: - Private Helpers
 
-    private func refreshIfNeeded() async throws {
-        if availableDisplays.isEmpty {
-            await refreshAvailableContent()
+    private func refreshSelectedCaptureTargets() {
+        if let selectedDisplayID = configuration.selectedDisplay?.displayID {
+            configuration.selectedDisplay = availableDisplays.first { $0.displayID == selectedDisplayID }
+                ?? availableDisplays.first
+        } else {
+            configuration.selectedDisplay = availableDisplays.first
+        }
+
+        if let selectedWindowID = configuration.selectedWindow?.windowID {
+            configuration.selectedWindow = availableWindows.first { $0.windowID == selectedWindowID }
         }
     }
 
     private func createContentFilter() throws -> SCContentFilter {
         switch configuration.mode {
         case .fullScreen:
-            guard let display = configuration.selectedDisplay ?? availableDisplays.first else {
+            guard let display = displayForFullScreenCapture() else {
                 throw CaptureError.noDisplay
             }
             return SCContentFilter(display: display, excludingWindows: [])
@@ -240,6 +252,19 @@ class CaptureEngine: NSObject, ObservableObject {
         ScreenGeometry.bestDisplay(for: area, in: availableDisplays)
     }
 
+    func displayForFullScreenCapture() -> SCDisplay? {
+        displayContainingMouse() ?? configuration.selectedDisplay ?? availableDisplays.first
+    }
+
+    private func displayContainingMouse() -> SCDisplay? {
+        let mouseLocation = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }),
+              let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+            return nil
+        }
+        return availableDisplays.first { $0.displayID == displayID }
+    }
+
     private func createStreamConfiguration() -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
 
@@ -264,7 +289,7 @@ class CaptureEngine: NSObject, ObservableObject {
                 config.height = Int(display.height) * 2
             }
         case .fullScreen:
-            if let display = configuration.selectedDisplay ?? availableDisplays.first {
+            if let display = displayForFullScreenCapture() {
                 switch configuration.resolution {
                 case .native:
                     config.width = Int(display.width) * 2

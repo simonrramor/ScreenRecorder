@@ -232,7 +232,7 @@ class AreaSelectionWindowController {
             window.isReleasedWhenClosed = false
             window.acceptsMouseMovedEvents = true
 
-            let selectionView = AreaSelectionNSView(frame: screen.frame)
+            let selectionView = AreaSelectionNSView(frame: NSRect(origin: .zero, size: screen.frame.size))
             selectionView.onAreaSelected = { [weak self] rect in
                 let screenRect = self?.convertToScreenCoordinates(rect, in: screen) ?? rect
                 onSelected(screenRect)
@@ -522,7 +522,7 @@ class WindowSelectionWindowController {
             panel.isReleasedWhenClosed = false
             panel.acceptsMouseMovedEvents = true
 
-            let selectionView = WindowSelectionNSView(frame: screen.frame, screen: screen)
+            let selectionView = WindowSelectionNSView(frame: NSRect(origin: .zero, size: screen.frame.size), screen: screen)
             selectionView.onWindowSelected = { [weak self] windowID in
                 onSelected(windowID)
                 self?.closeOverlay()
@@ -667,6 +667,7 @@ class RecordingAreaOverlayController {
                     screenFrame: screen.frame
                 )
             )
+            hostingView.frame = NSRect(origin: .zero, size: screen.frame.size)
             window.contentView = hostingView
             window.orderFrontRegardless()
             windows.append(window)

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 import ScreenCaptureKit
 import Combine
 import NaturalLanguage
@@ -22,6 +23,7 @@ class AppState: ObservableObject {
     var androidMirrorWindow = DeviceMirrorWindow()
     private var deviceManagerCancellable: AnyCancellable?
     private var captureEngineCancellable: AnyCancellable?
+    private var screenParametersCancellable: AnyCancellable?
 
     @Published var selectedSidebarItem: SidebarItem = .home
     @Published var selectedMediaItem: MediaItem?
@@ -113,6 +115,13 @@ class AppState: ObservableObject {
         captureEngineCancellable = captureEngine.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        screenParametersCancellable = NotificationCenter.default
+            .publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.captureEngine.refreshAvailableContent()
+                }
+            }
     }
 
     private func setupAndroidMirror() {
@@ -370,9 +379,7 @@ class AppState: ObservableObject {
             return false
         }
 
-        if captureEngine.availableDisplays.isEmpty {
-            await captureEngine.refreshAvailableContent()
-        }
+        await captureEngine.refreshAvailableContent()
         if captureEngine.availableDisplays.isEmpty {
             showErrorNotification(captureEngine.errorMessage ?? "No displays found. Please check screen recording permission in System Settings.")
             return false
@@ -390,7 +397,6 @@ class AppState: ObservableObject {
             pendingCaptureAction = .screenshot
             showWindowSelection()
         case .area:
-            // Show area selection immediately - no need to wait for display refresh
             pendingCaptureAction = .screenshot
             showAreaSelection()
         }
@@ -399,7 +405,7 @@ class AppState: ObservableObject {
     func takeFullScreenScreenshot() async {
         guard await ensureReadyForCapture() else { return }
 
-        let display = configuration.selectedDisplay ?? captureEngine.availableDisplays.first
+        let display = captureEngine.displayForFullScreenCapture()
         if let image = await screenshotService.captureFullScreen(display: display) {
             presentAnnotationEditor(with: image)
         } else if let error = screenshotService.errorMessage {
@@ -600,7 +606,7 @@ class AppState: ObservableObject {
 
         switch screenshotMode {
         case .fullScreen:
-            let display = configuration.selectedDisplay ?? captureEngine.availableDisplays.first
+            let display = captureEngine.displayForFullScreenCapture()
             if let image = await screenshotService.captureFullScreen(display: display) {
                 copyImageToClipboard(image)
             } else if let error = screenshotService.errorMessage {
@@ -610,7 +616,6 @@ class AppState: ObservableObject {
             pendingCaptureAction = .screenshot
             showWindowSelection()
         case .area:
-            // Show area selection immediately - no need to wait for display refresh
             pendingCaptureAction = .screenshot
             showAreaSelection()
         }
