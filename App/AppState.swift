@@ -210,8 +210,10 @@ class AppState: ObservableObject {
                 }
                 return
             }
-            let canUseNativeMirror = await requestNativeIOSMirrorAccess()
-            iosDeviceMirror.startMirroring(udid: udid, deviceName: device.name, allowNative: canUseNativeMirror)
+            // Avoid the native CoreMediaIO iOS screen-capture path for now.
+            // On macOS 26 it can crash the process after falling back to the
+            // in-app mirror, so try H.264 low latency without native preview.
+            iosDeviceMirror.startMirroring(udid: udid, deviceName: device.name, allowNative: false)
             if iosDeviceMirror.isMirroring {
                 if iosDeviceMirror.isNativeMirroring {
                     iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
@@ -242,9 +244,7 @@ class AppState: ObservableObject {
                     }
                 } else {
                     iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-                    if !canUseNativeMirror {
-                        showSavedNotification("Opened iPhone mirror in compatibility mode. Grant Camera access for native mode.")
-                    }
+                    showSavedNotification("Opened iPhone mirror in compatibility mode")
                 }
             } else if let error = iosDeviceMirror.errorMessage {
                 showErrorNotification(error)
@@ -283,8 +283,7 @@ class AppState: ObservableObject {
             }
 
             if !iosDeviceMirror.isMirroring {
-                let canUseNativeMirror = await requestNativeIOSMirrorAccess()
-                iosDeviceMirror.startMirroring(udid: udid, deviceName: device.name, allowNative: canUseNativeMirror)
+                iosDeviceMirror.startMirroring(udid: udid, deviceName: device.name, allowNative: false)
             }
             if iosDeviceMirror.isNativeMirroring {
                 iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)

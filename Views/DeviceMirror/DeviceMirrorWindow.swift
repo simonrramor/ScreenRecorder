@@ -12,6 +12,10 @@ final class IOSNativePreviewView: NSView {
         wantsLayer = true
         layer = CALayer()
         layer?.backgroundColor = NSColor.black.cgColor
+        if #available(macOS 14.0, *) {
+            layer?.wantsExtendedDynamicRangeContent = false
+            previewLayer.wantsExtendedDynamicRangeContent = false
+        }
 
         previewLayer.frame = bounds
         previewLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
@@ -68,6 +72,9 @@ class DeviceMirrorWindow {
             fallbackImageView.imageScaling = .scaleProportionallyUpOrDown
             fallbackImageView.wantsLayer = true
             fallbackImageView.layer?.backgroundColor = NSColor.black.cgColor
+            if #available(macOS 14.0, *) {
+                fallbackImageView.layer?.wantsExtendedDynamicRangeContent = false
+            }
             fallbackImageView.autoresizingMask = [.width, .height]
             if let frame = mirror.currentFrame {
                 fallbackImageView.image = frame

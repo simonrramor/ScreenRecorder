@@ -3,7 +3,7 @@
 Persistent iOS screen streaming helpers.
 
 Default mode uses pymobiledevice3 screenshots:
-    [4 bytes big-endian length][JPEG data] repeated
+    [4 bytes big-endian length][PNG data] repeated
 
 Low-latency mode uses ioscreen's QuickTime USB feed:
     Annex B H.264 NAL units written directly to stdout
@@ -39,19 +39,34 @@ def get_tunnel_info(udid=None):
     return None, None
 
 
-def png_to_jpeg(png_data, quality=55):
-    """Convert PNG data to smaller JPEG for faster pipe transfer."""
+def downscale_png(png_data):
+    """Downscale PNG data while preserving its display profile."""
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(png_data))
-        # Downscale to half resolution with a fast filter to keep latency down.
+        icc_profile = img.info.get('icc_profile')
+
+        # iOS screenshots arrive as color-profiled PNGs. Keeping them as PNG
+        # avoids the contrast/saturation shifts we saw when transcoding to JPEG.
         new_w = max(2, img.width // 2)
         new_h = max(2, img.height // 2)
-        img = img.resize((new_w, new_h), Image.BILINEAR)
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
+
+        try:
+            resample = Image.Resampling.BILINEAR
+        except AttributeError:
+            resample = Image.BILINEAR
+
+        img = img.resize((new_w, new_h), resample)
         buf = io.BytesIO()
-        img.save(buf, format='JPEG', quality=quality, optimize=False, progressive=False)
+        save_args = {
+            'format': 'PNG',
+            'optimize': False,
+            'compress_level': 1,
+        }
+        if icc_profile:
+            save_args['icc_profile'] = icc_profile
+
+        img.save(buf, **save_args)
         return buf.getvalue()
     except Exception:
         return png_data
@@ -91,11 +106,11 @@ async def stream(udid=None):
         while True:
             try:
                 png_data = screenshot.get_screenshot()
-                # Compress to JPEG and downscale for faster transfer
-                jpeg_data = png_to_jpeg(png_data)
-                length = len(jpeg_data)
+                # Downscale the profiled PNG for faster transfer.
+                frame_data = downscale_png(png_data)
+                length = len(frame_data)
                 stdout.write(struct.pack('>I', length))
-                stdout.write(jpeg_data)
+                stdout.write(frame_data)
                 stdout.flush()
 
                 frame_count += 1

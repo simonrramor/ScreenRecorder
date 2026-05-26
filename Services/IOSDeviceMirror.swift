@@ -285,6 +285,9 @@ private final class IOSNativeFrameGrabber: NSObject, AVCaptureVideoDataOutputSam
         let previewLayer = AVCaptureVideoPreviewLayer(session: session)
         previewLayer.videoGravity = .resizeAspect
         previewLayer.backgroundColor = NSColor.black.cgColor
+        if #available(macOS 14.0, *) {
+            previewLayer.wantsExtendedDynamicRangeContent = false
+        }
         return previewLayer
     }
 
