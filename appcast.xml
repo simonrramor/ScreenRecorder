@@ -6,6 +6,24 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.3.12</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fix screen capture after connecting an external monitor by refreshing ScreenCaptureKit display/window state before capture.</li>
+                    <li>Capture full-screen from the display under the pointer when multiple monitors are connected.</li>
+                    <li>Normalize selection overlays to local screen bounds so area and window capture target external displays correctly.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Tue, 26 May 2026 06:45:53 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.3.12/Captr.dmg"
+                       sparkle:version="22"
+                       sparkle:shortVersionString="1.3.12"
+                       sparkle:edSignature="emSYqP+2zUZCdqBiexHafVnn0j1m96wvM6S57FCq2j+O03WUrn6drWMWNcMBNjMJere4zyoHLckKCXsnR6piBg=="
+                       length="2307082"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.3.11</title>
             <description><![CDATA[
                 <ul>
