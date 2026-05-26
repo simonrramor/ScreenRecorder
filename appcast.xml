@@ -6,6 +6,25 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.3.13</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Add wired iPhone mirroring controls with native AVFoundation startup, low-latency playback, and compatibility fallback when macOS delivers a black stream.</li>
+                    <li>Add Android mirroring controls backed by scrcpy for lower-latency device streaming.</li>
+                    <li>Add camera entitlement and permission handling for iPhone mirroring.</li>
+                    <li>Harden iOS device detection, UDID normalization, mirror window focus, and native-session teardown around disconnects and sleep/wake.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Tue, 26 May 2026 15:11:40 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.3.13/Captr.dmg"
+                       sparkle:version="23"
+                       sparkle:shortVersionString="1.3.13"
+                       sparkle:edSignature="5UPUpqq51xo7o6UQX4RVyGlwP26Kkw39M8RsLZPQHg5xESuBdAYawH3yqWUPYWL7u5rw5MVKijErC8gtrgpVAQ=="
+                       length="2423664"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.3.12</title>
             <description><![CDATA[
                 <ul>
