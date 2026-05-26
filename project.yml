@@ -70,6 +70,7 @@ targets:
     entitlements:
       path: Captr.entitlements
       properties:
+        com.apple.security.device.camera: true
         com.apple.security.device.audio-input: true
 
   CaptrTests:

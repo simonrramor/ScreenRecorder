@@ -31,7 +31,7 @@ struct ContentView: View {
 
     private var screenshotBar: some View {
         HStack(spacing: 12) {
-            // Camera / Video toggle
+            // Capture type toggle
             HStack(spacing: 2) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) {
@@ -41,7 +41,7 @@ struct ContentView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "camera.fill")
                             .font(.system(size: 11))
-                        Text("Photo")
+                        Text("Screenshot")
                             .font(.system(size: 12))
                     }
                     .foregroundColor(!appState.isVideoMode ? .white : .secondary)
@@ -61,9 +61,9 @@ struct ContentView: View {
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "video.fill")
+                        Image(systemName: "record.circle")
                             .font(.system(size: 11))
-                        Text("Video")
+                        Text("Record")
                             .font(.system(size: 12))
                     }
                     .foregroundColor(appState.isVideoMode ? .white : .secondary)
@@ -125,7 +125,7 @@ struct ContentView: View {
                             RoundedRectangle(cornerRadius: 3)
                                 .fill(.white)
                                 .frame(width: 10, height: 10)
-                            Text(formatDuration(appState.captureEngine.recordingDuration))
+                            Text("Stop \(formatDuration(appState.captureEngine.recordingDuration))")
                                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                         }
                         .foregroundColor(.white)
@@ -145,7 +145,7 @@ struct ContentView: View {
                             Circle()
                                 .fill(Color.red)
                                 .frame(width: 10, height: 10)
-                            Text("Record")
+                            Text("Start Recording")
                                 .font(.system(size: 12, weight: .semibold))
                         }
                         .foregroundColor(.white)
@@ -153,7 +153,7 @@ struct ContentView: View {
                         .padding(.horizontal, 16)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
-                                .fill(Color(nsColor: NSColor(white: 0.25, alpha: 1.0)))
+                                .fill(Color.red)
                         )
                     }
                     .buttonStyle(.plain)
@@ -165,7 +165,7 @@ struct ContentView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "camera.fill")
                             .font(.system(size: 11))
-                        Text("Capture")
+                        Text("Take Screenshot")
                             .font(.system(size: 12, weight: .semibold))
                     }
                     .foregroundColor(.white)
@@ -177,6 +177,48 @@ struct ContentView: View {
                     )
                 }
                 .buttonStyle(.plain)
+            }
+
+            HStack(spacing: 6) {
+                Button {
+                    Task { await appState.startFirstAvailableIOSMirroring() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "iphone")
+                            .font(.system(size: 11))
+                        Text("iOS")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: NSColor(white: 0.20, alpha: 1.0)))
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Live stream a connected iPhone or iPad")
+
+                Button {
+                    Task { await appState.startFirstAvailableAndroidMirroring() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "candybarphone")
+                            .font(.system(size: 11))
+                        Text("Android")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: NSColor(white: 0.20, alpha: 1.0)))
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Live stream a connected Android device")
             }
 
             // Settings gear

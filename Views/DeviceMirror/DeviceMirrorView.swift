@@ -36,9 +36,17 @@ struct DeviceMirrorView: View {
 
     private func openMirrorWindow(for device: ConnectedDevice) {
         if device.platform == .iOS {
-            appState.iosMirrorWindow.openIOSMirrorWindow(mirror: appState.iosDeviceMirror, deviceName: device.name, appState: appState)
+            if appState.iosDeviceMirror.isLowLatencyMirroring {
+                appState.showSavedNotification("iPhone mirror is already open in low-latency mode")
+            } else {
+                appState.iosMirrorWindow.openIOSMirrorWindow(mirror: appState.iosDeviceMirror, deviceName: device.name, appState: appState)
+            }
         } else if device.platform == .android, let mirror = appState.androidDeviceMirror {
-            appState.androidMirrorWindow.openAndroidMirrorWindow(mirror: mirror, appState: appState)
+            if mirror.isLowLatencyMirroring {
+                appState.showSavedNotification("Android mirror is already open in low-latency mode")
+            } else {
+                appState.androidMirrorWindow.openAndroidMirrorWindow(mirror: mirror, appState: appState)
+            }
         }
     }
 
@@ -325,22 +333,20 @@ struct DeviceCard: View {
                     }
                     .buttonStyle(.plain)
 
-                    if device.platform == .android {
-                        Button(action: onMirrorRecord) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "record.circle")
-                                    .font(.system(size: 10))
-                                Text("Record")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                            .background(Color.red.opacity(0.85))
-                            .foregroundColor(.white)
-                            .cornerRadius(6)
+                    Button(action: onMirrorRecord) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "record.circle")
+                                .font(.system(size: 10))
+                            Text("Record")
+                                .font(.system(size: 11, weight: .medium))
                         }
-                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(Color.red.opacity(0.85))
+                        .foregroundColor(.white)
+                        .cornerRadius(6)
                     }
+                    .buttonStyle(.plain)
 
                     Button(action: onScreenshot) {
                         Image(systemName: "camera")

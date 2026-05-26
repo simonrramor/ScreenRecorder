@@ -92,7 +92,7 @@ class DeviceManager: ObservableObject {
     }
 
     func scanIOSDevices() {
-        guard IOSDeviceMirror.isAvailable else { return }
+        guard FileManager.default.fileExists(atPath: IOSDeviceMirror.ideviceIdPath) else { return }
 
         let ideviceIdPath = IOSDeviceMirror.ideviceIdPath
         Task.detached {
@@ -103,6 +103,46 @@ class DeviceManager: ObservableObject {
                 self?.devices = iosDevices + android
             }
         }
+    }
+
+    func refreshIOSDevicesNow() async -> [ConnectedDevice] {
+        let ideviceIdPath = IOSDeviceMirror.ideviceIdPath
+        guard FileManager.default.fileExists(atPath: ideviceIdPath) else { return [] }
+
+        let iosDevices = await Task.detached {
+            DeviceManager.scanIOSDevicesSync(ideviceIdPath: ideviceIdPath)
+        }.value
+
+        let android = devices.filter { $0.platform == .android }
+        devices = iosDevices + android
+        return iosDevices
+    }
+
+    func iosConnectionIssueMessage() async -> String {
+        let defaultMessage = "iPhone is not visible to macOS. Replug the cable, unlock it, tap Trust, then try again."
+        let xcrunPath = "/usr/bin/xcrun"
+        guard FileManager.default.fileExists(atPath: xcrunPath) else {
+            return defaultMessage
+        }
+
+        let output = await Task.detached {
+            DeviceManager.runCommand(xcrunPath, arguments: ["devicectl", "list", "devices"])
+        }.value
+
+        let hasCoreDeviceIOSDevice = output
+            .components(separatedBy: .newlines)
+            .contains { line in
+                let lowercased = line.lowercased()
+                let isIOSDevice = lowercased.contains("iphone") || lowercased.contains("ipad") || lowercased.contains("ipod")
+                let isReachable = lowercased.contains("connected") || lowercased.contains("available")
+                return isIOSDevice && isReachable
+            }
+
+        if hasCoreDeviceIOSDevice {
+            return "iPhone is paired in Xcode but not visible over USB. Use a data cable or direct Mac port, unlock it, and tap Trust."
+        }
+
+        return defaultMessage
     }
 
     nonisolated private static func scanIOSDevicesSync(ideviceIdPath: String) -> [ConnectedDevice] {

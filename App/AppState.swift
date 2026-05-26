@@ -126,11 +126,69 @@ class AppState: ObservableObject {
 
     private func setupAndroidMirror() {
         if let adb = deviceManager.adbPath {
-            androidDeviceMirror = AndroidDeviceMirror(adbPath: adb)
+            androidDeviceMirror = AndroidDeviceMirror(adbPath: adb, scrcpyPath: deviceManager.scrcpyPath)
         }
     }
 
+    private func requestNativeIOSMirrorAccess() async -> Bool {
+        await permissionsManager.requestCameraPermission()
+    }
+
     // MARK: - Device Mirroring Actions
+
+    func startFirstAvailableIOSMirroring() async {
+        var device = deviceManager.iosDevices.first
+
+        if deviceManager.iosDevices.isEmpty {
+            deviceManager.scanIOSDevices()
+
+            for _ in 0..<20 where deviceManager.iosDevices.isEmpty {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+
+            device = deviceManager.iosDevices.first
+        }
+
+        if device == nil {
+            device = await deviceManager.refreshIOSDevicesNow().first
+        }
+
+        guard let device else {
+            let message = await deviceManager.iosConnectionIssueMessage()
+            showErrorNotification(message)
+            return
+        }
+
+        await startDeviceMirroring(device: device)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func startFirstAvailableAndroidMirroring() async {
+        if androidDeviceMirror == nil || androidDeviceMirror?.isMirroring == false {
+            setupAndroidMirror()
+        }
+
+        guard deviceManager.adbAvailable else {
+            showErrorNotification("ADB not installed. Install via Homebrew: brew install android-platform-tools")
+            return
+        }
+
+        if deviceManager.androidDevices.isEmpty {
+            deviceManager.scanAndroidDevices()
+
+            for _ in 0..<10 where deviceManager.androidDevices.isEmpty {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+
+        guard let device = deviceManager.androidDevices.first else {
+            showErrorNotification("Connect your Android by cable, enable USB debugging, and allow the trust prompt.")
+            return
+        }
+
+        await startDeviceMirroring(device: device)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     func startDeviceMirroring(device: ConnectedDevice) async {
         switch device.platform {
@@ -141,12 +199,53 @@ class AppState: ObservableObject {
             }
             // If already mirroring, just reopen the window
             if iosDeviceMirror.isMirroring {
-                iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                if iosDeviceMirror.isLowLatencyMirroring {
+                    iosDeviceMirror.bringLowLatencyMirrorWindowToFront()
+                    showSavedNotification("iPhone mirror is already open in low-latency mode")
+                } else if iosDeviceMirror.isNativeMirroring {
+                    iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                    showSavedNotification("iPhone mirror is already open in native mode")
+                } else {
+                    iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                }
                 return
             }
-            iosDeviceMirror.startMirroring(udid: udid, deviceName: device.name)
+            let canUseNativeMirror = await requestNativeIOSMirrorAccess()
+            iosDeviceMirror.startMirroring(udid: udid, deviceName: device.name, allowNative: canUseNativeMirror)
             if iosDeviceMirror.isMirroring {
-                iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                if iosDeviceMirror.isNativeMirroring {
+                    iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                    if await iosDeviceMirror.waitForNativeStartup() {
+                        showSavedNotification("iPhone mirror opened in native low-latency mode")
+                    } else {
+                        let startupError = iosDeviceMirror.errorMessage ?? "Native iPhone mirror opened, but no video frames arrived."
+                        iosDeviceMirror.startFallbackMirroring(udid: udid, deviceName: device.name)
+                        if iosDeviceMirror.isMirroring {
+                            iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                            showSavedNotification("Opened iPhone mirror in compatibility mode because native video stayed black")
+                        } else {
+                            showErrorNotification(startupError)
+                        }
+                    }
+                } else if iosDeviceMirror.isLowLatencyMirroring {
+                    if await iosDeviceMirror.waitForLowLatencyStartup() {
+                        showSavedNotification("iPhone mirror opened in low-latency mode")
+                    } else {
+                        let startupError = iosDeviceMirror.errorMessage ?? "iPhone mirror closed before the player window opened."
+                        iosDeviceMirror.startFallbackMirroring(udid: udid, deviceName: device.name)
+                        if iosDeviceMirror.isMirroring {
+                            iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                            showSavedNotification("Opened iPhone mirror in compatibility mode")
+                        } else {
+                            showErrorNotification(startupError)
+                        }
+                    }
+                } else {
+                    iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                    if !canUseNativeMirror {
+                        showSavedNotification("Opened iPhone mirror in compatibility mode. Grant Camera access for native mode.")
+                    }
+                }
             } else if let error = iosDeviceMirror.errorMessage {
                 showErrorNotification(error)
             } else {
@@ -154,6 +253,9 @@ class AppState: ObservableObject {
             }
 
         case .android:
+            if androidDeviceMirror == nil || androidDeviceMirror?.isMirroring == false {
+                setupAndroidMirror()
+            }
             guard let mirror = androidDeviceMirror else {
                 setupAndroidMirror()
                 guard androidDeviceMirror != nil else {
@@ -164,21 +266,82 @@ class AppState: ObservableObject {
                 return
             }
             mirror.startMirroring(device: device)
-            androidMirrorWindow.openAndroidMirrorWindow(mirror: mirror, appState: self)
+            if mirror.isLowLatencyMirroring {
+                showSavedNotification("Android mirror opened in low-latency mode")
+            } else {
+                androidMirrorWindow.openAndroidMirrorWindow(mirror: mirror, appState: self)
+            }
         }
     }
 
     func startDeviceMirroringWithRecording(device: ConnectedDevice) async {
         switch device.platform {
         case .iOS:
-            showErrorNotification("iOS device recording is not supported yet. Use Mirror to view the device and Screenshot to capture frames.")
+            guard let udid = device.iosUDID else {
+                showErrorNotification("iOS device not available")
+                return
+            }
+
+            if !iosDeviceMirror.isMirroring {
+                let canUseNativeMirror = await requestNativeIOSMirrorAccess()
+                iosDeviceMirror.startMirroring(udid: udid, deviceName: device.name, allowNative: canUseNativeMirror)
+            }
+            if iosDeviceMirror.isNativeMirroring {
+                iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+
+                if await iosDeviceMirror.waitForNativeStartup() {
+                    showSavedNotification("Use Start Recording and select the iPhone mirror window")
+                } else {
+                    let startupError = iosDeviceMirror.errorMessage ?? "Native iPhone mirror opened, but no video frames arrived."
+                    iosDeviceMirror.startFallbackMirroring(udid: udid, deviceName: device.name)
+                    if iosDeviceMirror.isMirroring {
+                        iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                        showSavedNotification("Opened iPhone mirror in compatibility mode")
+                    } else {
+                        showErrorNotification(startupError)
+                    }
+                }
+                return
+            }
+            if iosDeviceMirror.isLowLatencyMirroring {
+                if await iosDeviceMirror.waitForLowLatencyStartup() {
+                    showSavedNotification("Use Start Recording and select the iPhone mirror window")
+                } else {
+                    let startupError = iosDeviceMirror.errorMessage ?? "iPhone mirror closed before the player window opened."
+                    iosDeviceMirror.startFallbackMirroring(udid: udid, deviceName: device.name)
+                    if iosDeviceMirror.isMirroring {
+                        iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                        showSavedNotification("Opened iPhone mirror in compatibility mode")
+                    } else {
+                        showErrorNotification(startupError)
+                    }
+                }
+                return
+            }
+            iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+
+            for _ in 0..<20 where iosDeviceMirror.currentFrame == nil {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+
+            iosDeviceMirror.startRecording()
+            if !iosDeviceMirror.isRecording {
+                showErrorNotification(iosDeviceMirror.errorMessage ?? "Failed to start iPhone recording")
+            }
 
         case .android:
+            if androidDeviceMirror == nil || androidDeviceMirror?.isMirroring == false {
+                setupAndroidMirror()
+            }
             guard let mirror = androidDeviceMirror else {
                 showErrorNotification("ADB not installed. Install via Homebrew: brew install android-platform-tools")
                 return
             }
             mirror.startMirroring(device: device)
+            if mirror.isLowLatencyMirroring {
+                showSavedNotification("Use Start Recording and select the Android mirror window")
+                return
+            }
             Task {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 mirror.startRecording()

@@ -1,5 +1,32 @@
 import AppKit
+import AVFoundation
 import SwiftUI
+
+final class IOSNativePreviewView: NSView {
+    private let previewLayer: AVCaptureVideoPreviewLayer
+
+    init(frame frameRect: NSRect, previewLayer: AVCaptureVideoPreviewLayer) {
+        self.previewLayer = previewLayer
+        super.init(frame: frameRect)
+
+        wantsLayer = true
+        layer = CALayer()
+        layer?.backgroundColor = NSColor.black.cgColor
+
+        previewLayer.frame = bounds
+        previewLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        layer?.addSublayer(previewLayer)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        previewLayer.frame = bounds
+    }
+}
 
 @MainActor
 class DeviceMirrorWindow {
@@ -27,20 +54,33 @@ class DeviceMirrorWindow {
         let windowWidth: CGFloat = windowHeight * aspect
         let controlsHeight: CGFloat = 50
 
-        let imageView = NSImageView(frame: NSRect(x: 0, y: controlsHeight, width: windowWidth, height: windowHeight))
-        imageView.imageScaling = .scaleProportionallyUpOrDown
-        imageView.wantsLayer = true
-        imageView.layer?.backgroundColor = NSColor.black.cgColor
-        imageView.autoresizingMask = [.width, .height]
-        if let frame = mirror.currentFrame {
-            imageView.image = frame
+        let mirrorRect = NSRect(x: 0, y: controlsHeight, width: windowWidth, height: windowHeight)
+        let mirrorView: NSView
+        let imageView: NSImageView?
+
+        if let previewLayer = mirror.makeNativePreviewLayer() {
+            let previewView = IOSNativePreviewView(frame: mirrorRect, previewLayer: previewLayer)
+            previewView.autoresizingMask = [.width, .height]
+            mirrorView = previewView
+            imageView = nil
+        } else {
+            let fallbackImageView = NSImageView(frame: mirrorRect)
+            fallbackImageView.imageScaling = .scaleProportionallyUpOrDown
+            fallbackImageView.wantsLayer = true
+            fallbackImageView.layer?.backgroundColor = NSColor.black.cgColor
+            fallbackImageView.autoresizingMask = [.width, .height]
+            if let frame = mirror.currentFrame {
+                fallbackImageView.image = frame
+            }
+            mirrorView = fallbackImageView
+            imageView = fallbackImageView
         }
 
         let controlsView = makeControlsView(width: windowWidth, height: controlsHeight, isIOS: true)
 
         let contentHeight = windowHeight + controlsHeight
         let containerView = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: contentHeight))
-        containerView.addSubview(imageView)
+        containerView.addSubview(mirrorView)
         containerView.addSubview(controlsView)
 
         let win = NSWindow(
@@ -59,9 +99,11 @@ class DeviceMirrorWindow {
         window = win
         imageViewRef = imageView
         isWindowOpen = true
-        win.makeKeyAndOrderFront(nil)
+        bringWindowToFront(win)
 
-        startDisplayTimer(iosMirror: mirror, imageView: imageView)
+        if let imageView {
+            startDisplayTimer(iosMirror: mirror, imageView: imageView)
+        }
     }
 
     // MARK: - Android Mirror Window
@@ -118,9 +160,15 @@ class DeviceMirrorWindow {
         window = win
         imageViewRef = imageView
         isWindowOpen = true
-        win.makeKeyAndOrderFront(nil)
+        bringWindowToFront(win)
 
         startDisplayTimer(androidMirror: mirror, imageView: imageView)
+    }
+
+    private func bringWindowToFront(_ window: NSWindow) {
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     // MARK: - Display Timers
@@ -205,13 +253,12 @@ class DeviceMirrorWindow {
 
         var lowerXOffset: CGFloat = 10
 
-        if !isIOS {
-            let recordBtn = makeButton(title: "Record", x: lowerXOffset, y: 8, color: .systemRed)
-            recordBtn.target = self
-            recordBtn.action = #selector(recordTapped(_:))
-            controlsView.addSubview(recordBtn)
-            lowerXOffset += 95
-        }
+        let recordTitle = (isIOS ? iosMirror?.isRecording : androidMirror?.isRecording) == true ? "Stop" : "Record"
+        let recordBtn = makeButton(title: recordTitle, x: lowerXOffset, y: 8, color: .systemRed)
+        recordBtn.target = self
+        recordBtn.action = #selector(recordTapped(_:))
+        controlsView.addSubview(recordBtn)
+        lowerXOffset += 95
 
         let ssBtn = makeButton(title: "Screenshot", x: lowerXOffset, y: 8, color: .systemBlue)
         ssBtn.target = self
@@ -240,8 +287,28 @@ class DeviceMirrorWindow {
 
     @objc private func recordTapped(_ sender: NSButton) {
         if let mirror = iosMirror {
-            mirror.startRecording()
-            appState?.showError(mirror.errorMessage ?? "iOS device recording is not supported")
+            if mirror.isRecording {
+                Task {
+                    if let url = await mirror.stopRecording() {
+                        await appState?.mediaLibrary.addRecording(at: url)
+                        appState?.showSavedNotification("iPhone recording saved")
+                    } else if let error = mirror.errorMessage {
+                        appState?.showError(error)
+                    }
+                }
+                sender.title = "Record"
+            } else {
+                if mirror.isNativeMirroring, mirror.currentFrame == nil {
+                    appState?.showSavedNotification("Use Capture's Window or Area recording on this iPhone mirror window")
+                    return
+                }
+                mirror.startRecording()
+                if mirror.isRecording {
+                    sender.title = "Stop"
+                } else {
+                    appState?.showError(mirror.errorMessage ?? "Failed to start iPhone recording")
+                }
+            }
         } else if let mirror = androidMirror {
             if mirror.isRecording {
                 Task {
@@ -268,6 +335,8 @@ class DeviceMirrorWindow {
         if let image = image {
             ClipboardService.copyImage(image)
             appState?.showSavedNotification("Screenshot copied to clipboard")
+        } else if let mirror = iosMirror, mirror.isNativeMirroring {
+            appState?.showError("Use Capture's Window or Area screenshot on this iPhone mirror window")
         }
     }
 

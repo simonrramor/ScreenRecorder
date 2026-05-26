@@ -8,9 +8,11 @@ import CoreGraphics
 class PermissionsManager: ObservableObject {
     @Published var hasScreenRecordingPermission: Bool = false
     @Published var hasMicrophonePermission: Bool = false
+    @Published var hasCameraPermission: Bool = false
 
     func checkAllPermissions() async {
         checkScreenRecordingPermission()
+        await checkCameraPermission()
         await checkMicrophonePermission()
     }
 
@@ -45,6 +47,38 @@ class PermissionsManager: ObservableObject {
         }
     }
 
+    func checkCameraPermission() async {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            hasCameraPermission = true
+        case .notDetermined:
+            hasCameraPermission = false
+        default:
+            hasCameraPermission = false
+        }
+    }
+
+    func requestCameraPermission() async -> Bool {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+
+        switch status {
+        case .authorized:
+            hasCameraPermission = true
+            return true
+        case .notDetermined:
+            let granted = await AVCaptureDevice.requestAccess(for: .video)
+            hasCameraPermission = granted
+            if !granted {
+                openCameraSettings()
+            }
+            return granted
+        default:
+            hasCameraPermission = false
+            openCameraSettings()
+            return false
+        }
+    }
+
     func requestMicrophonePermission() async {
         let granted = await AVCaptureDevice.requestAccess(for: .audio)
         hasMicrophonePermission = granted
@@ -55,6 +89,12 @@ class PermissionsManager: ObservableObject {
 
     private func openScreenRecordingSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func openCameraSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera") {
             NSWorkspace.shared.open(url)
         }
     }
