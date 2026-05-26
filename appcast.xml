@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.3.14</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Route iPhone mirroring away from the native CoreMediaIO preview path to avoid crashes on macOS 26.\n- Try the low-latency H.264 iPhone stream before falling back to compatibility mode.\n- Preserve iPhone screenshot color profiles in compatibility mode by streaming downscaled PNG frames.\n- Disable extended dynamic range on iPhone mirror preview layers to reduce harsh contrast.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Tue, 26 May 2026 16:31:24 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.3.14/Captr.dmg"
+                       sparkle:version="24"
+                       sparkle:shortVersionString="1.3.14"
+                       sparkle:edSignature="lurAJRiauv1wW2mDkyUc+Per8yYDrW1yjiQWQTTVrBHttEWArtwc44oOPl/YVJmhxPuOul+gKUlFyrAVp37WAw=="
+                       length="2420416"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.3.13</title>
             <description><![CDATA[
                 <ul>
