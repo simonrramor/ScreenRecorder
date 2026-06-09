@@ -13,9 +13,18 @@ class MediaLibraryManager: ObservableObject {
             .appendingPathComponent("Captr")
     }
 
+    /// Recordings land in Downloads where they're easy to find. The library
+    /// only indexes files matching Captr's own naming so it never has to
+    /// scan (or thumbnail) unrelated videos living there.
     static var recordingsDirectory: URL {
-        baseDirectory.appendingPathComponent("Recordings")
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
     }
+
+    private static let recordingFileNamePrefixes = [
+        "Screen Recording ",
+        "iPhone Mirror ",
+        "Android Device "
+    ]
 
     static var screenshotsDirectory: URL {
         baseDirectory.appendingPathComponent("Screenshots")
@@ -57,6 +66,7 @@ class MediaLibraryManager: ObservableObject {
         switch type {
         case .recording:
             isValidType = ["mp4", "mov", "m4v"].contains(ext)
+                && Self.recordingFileNamePrefixes.contains { file.lastPathComponent.hasPrefix($0) }
         case .screenshot:
             isValidType = ["png", "jpg", "jpeg", "tiff"].contains(ext)
         }

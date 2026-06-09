@@ -222,8 +222,12 @@ struct MenuBarView: View {
 
     private var bottomSection: some View {
         VStack(spacing: 4) {
-            MenuBarButton(icon: "folder", title: "Open Media Folder") {
-                NSWorkspace.shared.open(MediaLibraryManager.baseDirectory)
+            MenuBarButton(icon: "folder", title: "Open Recordings Folder") {
+                NSWorkspace.shared.open(MediaLibraryManager.recordingsDirectory)
+            }
+
+            MenuBarButton(icon: "photo.on.rectangle", title: "Open Screenshots Folder") {
+                NSWorkspace.shared.open(MediaLibraryManager.screenshotsDirectory)
             }
 
             Button {
