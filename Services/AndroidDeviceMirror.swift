@@ -105,9 +105,14 @@ class AndroidInputHandler: @unchecked Sendable {
     }
 
     func text(_ text: String) {
-        // `input text` runs through the device shell: spaces map to %s and
-        // shell metacharacters must be backslash-escaped or they get eaten
-        // (or worse, interpreted) on the device side.
+        runAdb("shell", "input", "text", Self.escapedInputText(text))
+    }
+
+    /// Escapes a string for `adb shell input text`, which runs through the
+    /// device shell: spaces map to %s and shell metacharacters must be
+    /// backslash-escaped or they get eaten (or worse, interpreted) on the
+    /// device side.
+    static func escapedInputText(_ text: String) -> String {
         var escaped = ""
         for character in text {
             switch character {
@@ -119,7 +124,7 @@ class AndroidInputHandler: @unchecked Sendable {
                 escaped.append(character)
             }
         }
-        runAdb("shell", "input", "text", escaped)
+        return escaped
     }
 
     private func runAdb(_ args: String...) {

@@ -179,9 +179,8 @@ class AppState: ObservableObject {
     }
 
     /// How an iOS mirror ended up on screen after running the transport
-    /// ladder (native → low-latency H.264 → screenshot compatibility).
+    /// ladder (low-latency H.264 player → screenshot compatibility).
     private enum IOSMirrorMode {
-        case native
         case lowLatency
         case compatibility
     }
@@ -191,23 +190,11 @@ class AppState: ObservableObject {
     /// when everything failed (an error notification was already shown).
     private func openIOSMirror(udid: String, deviceName: String) async -> IOSMirrorMode? {
         if !iosDeviceMirror.isMirroring {
-            // Avoid the native CoreMediaIO iOS screen-capture path for now.
-            // On macOS 26 it can crash the process after falling back to the
-            // in-app mirror, so try H.264 low latency without native preview.
-            iosDeviceMirror.startMirroring(udid: udid, deviceName: deviceName, allowNative: false)
+            iosDeviceMirror.startMirroring(udid: udid, deviceName: deviceName)
         }
         guard iosDeviceMirror.isMirroring else {
             showErrorNotification(iosDeviceMirror.errorMessage ?? "Failed to start iOS mirroring")
             return nil
-        }
-
-        if iosDeviceMirror.isNativeMirroring {
-            iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: deviceName, appState: self)
-            if await iosDeviceMirror.waitForNativeStartup() {
-                return .native
-            }
-            let startupError = iosDeviceMirror.errorMessage ?? "Native iPhone mirror opened, but no video frames arrived."
-            return fallBackToCompatibilityMirror(udid: udid, deviceName: deviceName, startupError: startupError)
         }
 
         if iosDeviceMirror.isLowLatencyMirroring {
@@ -259,16 +246,11 @@ class AppState: ObservableObject {
                     showSavedNotification("iPhone mirror is already open in low-latency mode")
                 } else {
                     iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-                    if iosDeviceMirror.isNativeMirroring {
-                        showSavedNotification("iPhone mirror is already open in native mode")
-                    }
                 }
                 return
             }
 
             switch await openIOSMirror(udid: udid, deviceName: device.name) {
-            case .native:
-                showSavedNotification("iPhone mirror opened in native low-latency mode")
             case .lowLatency:
                 showSavedNotification("iPhone mirror opened in low-latency mode")
             case .compatibility:
@@ -297,7 +279,7 @@ class AppState: ObservableObject {
             }
 
             switch await openIOSMirror(udid: udid, deviceName: device.name) {
-            case .native, .lowLatency:
+            case .lowLatency:
                 showSavedNotification("Use Start Recording and select the iPhone mirror window")
             case .compatibility:
                 for _ in 0..<20 where iosDeviceMirror.currentFrame == nil {

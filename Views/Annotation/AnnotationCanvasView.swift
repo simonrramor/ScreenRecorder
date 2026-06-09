@@ -272,7 +272,15 @@ struct AnnotationCanvasView: View {
                     .foregroundColor: NSColor(item.color)
                 ]
                 let string = NSAttributedString(string: text, attributes: attrs)
-                string.draw(at: NSPoint(x: start.x * scaleX, y: size.height - start.y * scaleY - 20))
+                // The live canvas anchors text top-leading, but AppKit's
+                // draw(at:) anchors the lower-left corner. Offset down by the
+                // string's own height (which scales with the font) so the
+                // saved position matches the preview at any image scale.
+                let textHeight = string.size().height
+                string.draw(at: NSPoint(
+                    x: start.x * scaleX,
+                    y: size.height - start.y * scaleY - textHeight
+                ))
             }
         }
 

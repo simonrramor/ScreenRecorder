@@ -1,7 +1,6 @@
 import Foundation
 import AppKit
 import AVFoundation
-import CoreMediaIO
 
 @MainActor
 private final class IOSMirrorVideoRecorder {
@@ -218,257 +217,6 @@ private final class IOSMirrorVideoRecorder {
     }
 }
 
-private final class IOSNativeFrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
-    private let session = AVCaptureSession()
-    private let sessionQueue = DispatchQueue(label: "com.captr.ios-native-mirror.session", qos: .userInitiated)
-    private let sessionQueueKey = DispatchSpecificKey<Void>()
-    private let sampleQueue = DispatchQueue(label: "com.captr.ios-native-mirror.sample", qos: .userInteractive)
-    private let ciContext = CIContext()
-    private let stateLock = NSLock()
-    private var output: AVCaptureVideoDataOutput?
-    private var input: AVCaptureDeviceInput?
-    private var notificationTokens: [NSObjectProtocol] = []
-    private var _isRunning = false
-    private var lastDeliveredFrameTime: CFAbsoluteTime = 0
-
-    var onFrame: ((NSImage) -> Void)?
-    var onFailure: ((String) -> Void)?
-
-    private var isRunning: Bool {
-        get { stateLock.withLock { _isRunning } }
-        set { stateLock.withLock { _isRunning = newValue } }
-    }
-
-    override init() {
-        super.init()
-        sessionQueue.setSpecific(key: sessionQueueKey, value: ())
-    }
-
-    deinit {
-        stop()
-    }
-
-    func start(preferredDeviceName: String) throws -> String {
-        var result: Result<String, Error>!
-        sessionQueue.sync {
-            result = Result {
-                try self.configureSession(preferredDeviceName: preferredDeviceName)
-            }
-        }
-
-        let localizedName = try result.get()
-        isRunning = true
-
-        sessionQueue.async { [weak self] in
-            guard let self, self.isRunning else { return }
-            self.session.startRunning()
-        }
-
-        return localizedName
-    }
-
-    func stop() {
-        isRunning = false
-
-        let teardown = {
-            self.teardownSession()
-        }
-
-        if DispatchQueue.getSpecific(key: sessionQueueKey) != nil {
-            teardown()
-        } else {
-            sessionQueue.sync(execute: teardown)
-        }
-    }
-
-    func makePreviewLayer() -> AVCaptureVideoPreviewLayer {
-        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
-        previewLayer.videoGravity = .resizeAspect
-        previewLayer.backgroundColor = NSColor.black.cgColor
-        if #available(macOS 14.0, *) {
-            previewLayer.wantsExtendedDynamicRangeContent = false
-        }
-        return previewLayer
-    }
-
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        autoreleasepool {
-            guard isRunning,
-                  let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-                return
-            }
-
-            let now = CFAbsoluteTimeGetCurrent()
-            guard now - lastDeliveredFrameTime >= 1.0 / 60.0 else { return }
-            lastDeliveredFrameTime = now
-
-            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-            guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
-                return
-            }
-
-            let size = NSSize(width: cgImage.width, height: cgImage.height)
-
-            DispatchQueue.main.async { [weak self] in
-                guard self?.isRunning == true else { return }
-                self?.onFrame?(NSImage(cgImage: cgImage, size: size))
-            }
-        }
-    }
-
-    private func configureSession(preferredDeviceName: String) throws -> String {
-        teardownSession()
-
-        guard Self.enableScreenCaptureDevices() else {
-            throw NSError(
-                domain: "IOSNativeFrameGrabber",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Could not enable macOS iOS screen capture devices."]
-            )
-        }
-
-        guard let device = Self.findMuxedDevice(preferredDeviceName: preferredDeviceName) else {
-            throw NSError(
-                domain: "IOSNativeFrameGrabber",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "No wired iPhone screen capture device is available."]
-            )
-        }
-
-        let input = try AVCaptureDeviceInput(device: device)
-
-        session.beginConfiguration()
-        session.sessionPreset = .high
-
-        guard session.canAddInput(input) else {
-            session.commitConfiguration()
-            throw NSError(
-                domain: "IOSNativeFrameGrabber",
-                code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "Could not attach the iPhone screen input."]
-            )
-        }
-        session.addInput(input)
-
-        let output = AVCaptureVideoDataOutput()
-        output.alwaysDiscardsLateVideoFrames = true
-        output.videoSettings = [
-            AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-        ]
-        output.setSampleBufferDelegate(self, queue: sampleQueue)
-
-        if session.canAddOutput(output) {
-            session.addOutput(output)
-            self.output = output
-        } else {
-            output.setSampleBufferDelegate(nil, queue: nil)
-        }
-        session.commitConfiguration()
-
-        self.input = input
-        installSessionObservers(for: device)
-
-        return device.localizedName
-    }
-
-    private func teardownSession() {
-        notificationTokens.forEach { NotificationCenter.default.removeObserver($0) }
-        notificationTokens.removeAll()
-
-        output?.setSampleBufferDelegate(nil, queue: nil)
-        if session.isRunning {
-            session.stopRunning()
-        }
-
-        session.beginConfiguration()
-        if let output, session.outputs.contains(output) {
-            session.removeOutput(output)
-        }
-        if let input, session.inputs.contains(input) {
-            session.removeInput(input)
-        }
-        session.commitConfiguration()
-
-        output = nil
-        input = nil
-    }
-
-    private func installSessionObservers(for device: AVCaptureDevice) {
-        let center = NotificationCenter.default
-
-        notificationTokens.append(
-            center.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil) { [weak self] notification in
-                let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
-                self?.handleSessionFailure(error?.localizedDescription ?? "The native iPhone mirror session stopped.")
-            }
-        )
-
-        notificationTokens.append(
-            center.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: session, queue: nil) { [weak self] _ in
-                self?.handleSessionFailure("The native iPhone mirror was interrupted.")
-            }
-        )
-
-        notificationTokens.append(
-            center.addObserver(forName: AVCaptureDevice.wasDisconnectedNotification, object: device, queue: nil) { [weak self] _ in
-                self?.handleSessionFailure("The iPhone disconnected from the native mirror.")
-            }
-        )
-    }
-
-    private func handleSessionFailure(_ message: String) {
-        guard isRunning else { return }
-        isRunning = false
-
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-            self.teardownSession()
-            DispatchQueue.main.async { [weak self] in
-                self?.onFailure?(message)
-            }
-        }
-    }
-
-    private static func enableScreenCaptureDevices() -> Bool {
-        var allow: UInt32 = 1
-        var propertyAddress = CMIOObjectPropertyAddress(
-            mSelector: CMIOObjectPropertySelector(kCMIOHardwarePropertyAllowScreenCaptureDevices),
-            mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
-            mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain)
-        )
-
-        let status = CMIOObjectSetPropertyData(
-            CMIOObjectID(kCMIOObjectSystemObject),
-            &propertyAddress,
-            0,
-            nil,
-            UInt32(MemoryLayout<UInt32>.size),
-            &allow
-        )
-        return status == noErr
-    }
-
-    private static func findMuxedDevice(preferredDeviceName: String) -> AVCaptureDevice? {
-        for _ in 0..<15 {
-            let devices = AVCaptureDevice.devices(for: .muxed)
-            if let exact = devices.first(where: { device in
-                device.localizedName.localizedCaseInsensitiveContains(preferredDeviceName)
-                    || preferredDeviceName.localizedCaseInsensitiveContains(device.localizedName)
-            }) {
-                return exact
-            }
-            if let first = devices.first {
-                return first
-            }
-
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-
-        return nil
-    }
-}
-
 // Persistent frame grabber using pymobiledevice3 streaming script
 class IOSFrameGrabber: @unchecked Sendable {
     private let pythonPath: String
@@ -625,9 +373,7 @@ class IOSDeviceMirror: ObservableObject {
     @Published var mirroringDeviceName: String = ""
     @Published var currentFrame: NSImage?
     @Published var isLowLatencyMirroring = false
-    @Published var isNativeMirroring = false
 
-    private var nativeFrameGrabber: IOSNativeFrameGrabber?
     private var frameGrabber: IOSFrameGrabber?
     private var lowLatencyStreamProcess: Process?
     private var lowLatencyPlayerProcess: Process?
@@ -637,14 +383,26 @@ class IOSDeviceMirror: ObservableObject {
     private var recordingStartDate: Date?
     private var mirroringDeviceUDID: String?
     private var videoRecorder: IOSMirrorVideoRecorder?
-    private var nativeLifecycleObserverRemovers: [() -> Void] = []
+    private var terminationObserver: NSObjectProtocol?
 
     init() {
-        installNativeLifecycleObservers()
+        // Stop the streaming helper processes when the app quits so we don't
+        // leave orphaned python/ffplay children behind.
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.stopMirroring()
+            }
+        }
     }
 
     deinit {
-        nativeLifecycleObserverRemovers.forEach { $0() }
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
     }
 
     // Tool paths, resolved per call so installing a tool while the app is
@@ -656,16 +414,12 @@ class IOSDeviceMirror: ObservableObject {
         Bundle.main.path(forResource: "ios_stream", ofType: "py")
     }
 
-    func startMirroring(udid: String, deviceName: String, allowNative: Bool = true) {
+    func startMirroring(udid: String, deviceName: String) {
         guard !isMirroring else { return }
         errorMessage = nil
         lowLatencyErrorOutput = ""
         mirroringDeviceName = deviceName
         mirroringDeviceUDID = udid
-
-        if allowNative, startNativeMirroring(deviceName: deviceName) {
-            return
-        }
 
         if startLowLatencyMirroring(udid: udid, deviceName: deviceName) {
             return
@@ -687,7 +441,6 @@ class IOSDeviceMirror: ObservableObject {
         mirroringDeviceName = deviceName
         mirroringDeviceUDID = udid
         isLowLatencyMirroring = false
-        isNativeMirroring = false
         lowLatencyErrorOutput = ""
 
         // Ensure tunneld is running (needed for iOS 17+). Runs in the
@@ -726,32 +479,8 @@ class IOSDeviceMirror: ObservableObject {
         return true
     }
 
-    func waitForNativeStartup() async -> Bool {
-        guard isNativeMirroring else { return false }
-
-        for _ in 0..<20 {
-            if currentFrame != nil {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
-
-        if errorMessage == nil {
-            errorMessage = "Native iPhone mirror opened, but macOS did not deliver video frames."
-        }
-        return false
-    }
-
-    func makeNativePreviewLayer() -> AVCaptureVideoPreviewLayer? {
-        guard isNativeMirroring else { return nil }
-        return nativeFrameGrabber?.makePreviewLayer()
-    }
-
     func stopMirroring() {
         stopLowLatencyMirroring()
-
-        nativeFrameGrabber?.stop()
-        nativeFrameGrabber = nil
 
         frameGrabber?.stop()
         frameGrabber = nil
@@ -762,7 +491,6 @@ class IOSDeviceMirror: ObservableObject {
 
         isMirroring = false
         isLowLatencyMirroring = false
-        isNativeMirroring = false
         currentFrame = nil
         mirroringDeviceName = ""
         mirroringDeviceUDID = nil
@@ -778,11 +506,7 @@ class IOSDeviceMirror: ObservableObject {
         errorMessage = nil
 
         guard let frame = currentFrame else {
-            if isNativeMirroring {
-                errorMessage = "Use Capture's Window or Area recording on the iPhone mirror window."
-            } else {
-                errorMessage = "Waiting for the first iPhone frame before recording."
-            }
+            errorMessage = "Waiting for the first iPhone frame before recording."
             return
         }
 
@@ -833,104 +557,9 @@ class IOSDeviceMirror: ObservableObject {
         videoRecorder = nil
     }
 
-    // MARK: - Native AVFoundation Mirror
-
-    private func startNativeMirroring(deviceName: String) -> Bool {
-        let grabber = IOSNativeFrameGrabber()
-        grabber.onFrame = { [weak self] image in
-            Task { @MainActor [weak self] in
-                guard let self, self.isMirroring, self.isNativeMirroring else { return }
-                self.currentFrame = image
-                if self.deviceResolution == .zero {
-                    self.deviceResolution = image.size
-                }
-            }
-        }
-        grabber.onFailure = { [weak self] message in
-            Task { @MainActor [weak self] in
-                self?.fallBackFromNativeMirroring(reason: message)
-            }
-        }
-
-        do {
-            let nativeDeviceName = try grabber.start(preferredDeviceName: deviceName)
-            nativeFrameGrabber = grabber
-            mirroringDeviceName = nativeDeviceName
-            isNativeMirroring = true
-            isLowLatencyMirroring = false
-            isMirroring = true
-            return true
-        } catch {
-            errorMessage = "Native iPhone mirror unavailable: \(error.localizedDescription)"
-            nativeFrameGrabber = nil
-            isNativeMirroring = false
-            return false
-        }
-    }
-
-    private func installNativeLifecycleObservers() {
-        let workspaceCenter = NSWorkspace.shared.notificationCenter
-        let defaultCenter = NotificationCenter.default
-
-        let willSleep = workspaceCenter.addObserver(
-            forName: NSWorkspace.willSleepNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.stopNativeMirroringForSystemEvent("Stopped iPhone mirror before Mac sleep.")
-            }
-        }
-        nativeLifecycleObserverRemovers.append { workspaceCenter.removeObserver(willSleep) }
-
-        let didWake = workspaceCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.stopNativeMirroringForSystemEvent("Stopped iPhone mirror after Mac wake. Reopen it to start a fresh stream.")
-            }
-        }
-        nativeLifecycleObserverRemovers.append { workspaceCenter.removeObserver(didWake) }
-
-        let willTerminate = defaultCenter.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.stopMirroring()
-            }
-        }
-        nativeLifecycleObserverRemovers.append { defaultCenter.removeObserver(willTerminate) }
-    }
-
-    private func fallBackFromNativeMirroring(reason: String) {
-        guard isNativeMirroring else { return }
-
-        let udid = mirroringDeviceUDID
-        let deviceName = mirroringDeviceName.isEmpty ? "iPhone" : mirroringDeviceName
-        stopMirroring()
-        errorMessage = reason
-
-        if let udid {
-            startFallbackMirroring(udid: udid, deviceName: deviceName)
-            errorMessage = reason
-        }
-    }
-
-    private func stopNativeMirroringForSystemEvent(_ message: String) {
-        guard isNativeMirroring else { return }
-        stopMirroring()
-        errorMessage = message
-    }
-
     // MARK: - Low-Latency H.264 Player
 
     private func startLowLatencyMirroring(udid: String, deviceName: String) -> Bool {
-        isNativeMirroring = false
-
         guard let ffplayPath = Self.ffplayPath else {
             errorMessage = "ffplay not found. Falling back to screenshot mirroring."
             return false

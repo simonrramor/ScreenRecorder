@@ -68,4 +68,11 @@ final class ScreenGeometryTests: XCTestCase {
 
         XCTAssertEqual(localRect, CGRect(x: 1500, y: 970, width: 12, height: 12))
     }
+
+    func testBackingScaleForOffScreenRectIsNil() {
+        // A rect far outside every physical display intersects nothing, so
+        // there's no display to read a backing scale from.
+        let offScreen = CGRect(x: -9_000_000, y: -9_000_000, width: 10, height: 10)
+        XCTAssertNil(ScreenGeometry.backingScale(forCGRect: offScreen))
+    }
 }

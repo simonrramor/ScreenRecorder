@@ -1,36 +1,5 @@
 import AppKit
-import AVFoundation
 import SwiftUI
-
-final class IOSNativePreviewView: NSView {
-    private let previewLayer: AVCaptureVideoPreviewLayer
-
-    init(frame frameRect: NSRect, previewLayer: AVCaptureVideoPreviewLayer) {
-        self.previewLayer = previewLayer
-        super.init(frame: frameRect)
-
-        wantsLayer = true
-        layer = CALayer()
-        layer?.backgroundColor = NSColor.black.cgColor
-        if #available(macOS 14.0, *) {
-            layer?.wantsExtendedDynamicRangeContent = false
-            previewLayer.wantsExtendedDynamicRangeContent = false
-        }
-
-        previewLayer.frame = bounds
-        previewLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-        layer?.addSublayer(previewLayer)
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func layout() {
-        super.layout()
-        previewLayer.frame = bounds
-    }
-}
 
 @MainActor
 class DeviceMirrorWindow {
@@ -59,35 +28,23 @@ class DeviceMirrorWindow {
         let controlsHeight: CGFloat = 50
 
         let mirrorRect = NSRect(x: 0, y: controlsHeight, width: windowWidth, height: windowHeight)
-        let mirrorView: NSView
-        let imageView: NSImageView?
-
-        if let previewLayer = mirror.makeNativePreviewLayer() {
-            let previewView = IOSNativePreviewView(frame: mirrorRect, previewLayer: previewLayer)
-            previewView.autoresizingMask = [.width, .height]
-            mirrorView = previewView
-            imageView = nil
-        } else {
-            let fallbackImageView = NSImageView(frame: mirrorRect)
-            fallbackImageView.imageScaling = .scaleProportionallyUpOrDown
-            fallbackImageView.wantsLayer = true
-            fallbackImageView.layer?.backgroundColor = NSColor.black.cgColor
-            if #available(macOS 14.0, *) {
-                fallbackImageView.layer?.wantsExtendedDynamicRangeContent = false
-            }
-            fallbackImageView.autoresizingMask = [.width, .height]
-            if let frame = mirror.currentFrame {
-                fallbackImageView.image = frame
-            }
-            mirrorView = fallbackImageView
-            imageView = fallbackImageView
+        let imageView = NSImageView(frame: mirrorRect)
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.wantsLayer = true
+        imageView.layer?.backgroundColor = NSColor.black.cgColor
+        if #available(macOS 14.0, *) {
+            imageView.layer?.wantsExtendedDynamicRangeContent = false
+        }
+        imageView.autoresizingMask = [.width, .height]
+        if let frame = mirror.currentFrame {
+            imageView.image = frame
         }
 
         let controlsView = makeControlsView(width: windowWidth, height: controlsHeight, isIOS: true)
 
         let contentHeight = windowHeight + controlsHeight
         let containerView = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: contentHeight))
-        containerView.addSubview(mirrorView)
+        containerView.addSubview(imageView)
         containerView.addSubview(controlsView)
 
         let win = NSWindow(
@@ -108,9 +65,7 @@ class DeviceMirrorWindow {
         isWindowOpen = true
         bringWindowToFront(win)
 
-        if let imageView {
-            startDisplayTimer(iosMirror: mirror, imageView: imageView)
-        }
+        startDisplayTimer(iosMirror: mirror, imageView: imageView)
     }
 
     // MARK: - Android Mirror Window
@@ -188,7 +143,9 @@ class DeviceMirrorWindow {
                     timer.invalidate()
                     return
                 }
-                if let frame = mirror.currentFrame {
+                // Each delivered frame is a fresh NSImage, so an identity check
+                // skips the redraw when no new frame has arrived.
+                if let frame = mirror.currentFrame, frame !== iv.image {
                     iv.image = frame
                 }
             }
@@ -203,7 +160,7 @@ class DeviceMirrorWindow {
                     timer.invalidate()
                     return
                 }
-                if let frame = mirror.currentFrame {
+                if let frame = mirror.currentFrame, frame !== iv.image {
                     iv.image = frame
                 }
             }
@@ -305,10 +262,6 @@ class DeviceMirrorWindow {
                 }
                 sender.title = "Record"
             } else {
-                if mirror.isNativeMirroring, mirror.currentFrame == nil {
-                    appState?.showSavedNotification("Use Capture's Window or Area recording on this iPhone mirror window")
-                    return
-                }
                 mirror.startRecording()
                 if mirror.isRecording {
                     sender.title = "Stop"
@@ -342,8 +295,8 @@ class DeviceMirrorWindow {
         if let image = image {
             ClipboardService.copyImage(image)
             appState?.showSavedNotification("Screenshot copied to clipboard")
-        } else if let mirror = iosMirror, mirror.isNativeMirroring {
-            appState?.showError("Use Capture's Window or Area screenshot on this iPhone mirror window")
+        } else {
+            appState?.showError("No frame available yet — wait for the mirror to start, then try again")
         }
     }
 

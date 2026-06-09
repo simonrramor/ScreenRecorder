@@ -26,6 +26,14 @@ class MediaLibraryManager: ObservableObject {
         "Android Device "
     ]
 
+    /// Whether a Downloads file is one Captr produced — gates which videos the
+    /// library indexes (and may delete) so it never touches unrelated files.
+    static func isRecognizedRecording(fileName: String) -> Bool {
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        guard ["mp4", "mov", "m4v"].contains(ext) else { return false }
+        return recordingFileNamePrefixes.contains { fileName.hasPrefix($0) }
+    }
+
     static var screenshotsDirectory: URL {
         baseDirectory.appendingPathComponent("Screenshots")
     }
@@ -65,8 +73,7 @@ class MediaLibraryManager: ObservableObject {
         let isValidType: Bool
         switch type {
         case .recording:
-            isValidType = ["mp4", "mov", "m4v"].contains(ext)
-                && Self.recordingFileNamePrefixes.contains { file.lastPathComponent.hasPrefix($0) }
+            isValidType = Self.isRecognizedRecording(fileName: file.lastPathComponent)
         case .screenshot:
             isValidType = ["png", "jpg", "jpeg", "tiff"].contains(ext)
         }
