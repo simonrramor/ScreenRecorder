@@ -15,6 +15,10 @@ class CaptureEngine: NSObject, ObservableObject {
     /// Called on the main actor when the stream stops unexpectedly.
     var onStreamError: ((String) -> Void)?
 
+    /// Called on the main actor for non-fatal problems (e.g. the microphone
+    /// failed to start) while the recording itself keeps running.
+    var onWarning: ((String) -> Void)?
+
     private var stream: SCStream?
     private var streamOutput: CaptureStreamOutput?
     private var durationTimer: Timer?
@@ -122,6 +126,11 @@ class CaptureEngine: NSObject, ObservableObject {
             streamOutput = output
 
             if configuration.captureMicrophone {
+                audioManager.onError = { [weak self] message in
+                    Task { @MainActor [weak self] in
+                        self?.onWarning?("Recording continues without microphone: \(message)")
+                    }
+                }
                 audioManager.startMicrophoneCapture { [weak bufferWriter] sampleBuffer in
                     bufferWriter?.appendAudio(sampleBuffer)
                 }
@@ -271,8 +280,8 @@ class CaptureEngine: NSObject, ObservableObject {
         switch configuration.mode {
         case .window:
             if let window = configuration.selectedWindow {
-                config.width = Int(window.frame.width) * 2
-                config.height = Int(window.frame.height) * 2
+                let scale = ScreenGeometry.backingScale(forCGRect: window.frame) ?? 2.0
+                setEvenPixelSize(on: config, width: window.frame.width * scale, height: window.frame.height * scale)
             }
         case .area:
             if let area = configuration.selectedArea,
@@ -280,20 +289,17 @@ class CaptureEngine: NSObject, ObservableObject {
                 let localRect = ScreenGeometry.integralDisplayLocalRect(for: area, displayID: display.displayID) ?? .zero
                 config.sourceRect = localRect
                 let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
-                let pixW = Int(localRect.width * scale)
-                let pixH = Int(localRect.height * scale)
-                config.width = pixW - (pixW % 2)
-                config.height = pixH - (pixH % 2)
+                setEvenPixelSize(on: config, width: localRect.width * scale, height: localRect.height * scale)
             } else if let display = configuration.selectedDisplay ?? availableDisplays.first {
-                config.width = Int(display.width) * 2
-                config.height = Int(display.height) * 2
+                let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
+                setEvenPixelSize(on: config, width: CGFloat(display.width) * scale, height: CGFloat(display.height) * scale)
             }
         case .fullScreen:
             if let display = displayForFullScreenCapture() {
                 switch configuration.resolution {
                 case .native:
-                    config.width = Int(display.width) * 2
-                    config.height = Int(display.height) * 2
+                    let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
+                    setEvenPixelSize(on: config, width: CGFloat(display.width) * scale, height: CGFloat(display.height) * scale)
                 case .hd1080:
                     config.width = 1920
                     config.height = 1080
@@ -316,6 +322,14 @@ class CaptureEngine: NSObject, ObservableObject {
         }
 
         return config
+    }
+
+    /// H.264 requires even dimensions; odd sizes make the encoder fail.
+    private func setEvenPixelSize(on config: SCStreamConfiguration, width: CGFloat, height: CGFloat) {
+        let pixW = Int(width)
+        let pixH = Int(height)
+        config.width = max(2, pixW - (pixW % 2))
+        config.height = max(2, pixH - (pixH % 2))
     }
 
     private func startDurationTimer() {
@@ -347,7 +361,6 @@ class BufferWriter: @unchecked Sendable {
     private let videoInput: AVAssetWriterInput
     private let audioInput: AVAssetWriterInput?
     private let lock = NSLock()
-    private var startTime: CMTime?
     private var sessionStarted = false
     private var isFinished = false
 
@@ -456,7 +469,6 @@ class BufferWriter: @unchecked Sendable {
             assetWriter.startWriting()
             let pts = CMSampleBufferGetPresentationTimeStamp(newSampleBuffer)
             assetWriter.startSession(atSourceTime: pts)
-            startTime = pts
             sessionStarted = true
         }
 

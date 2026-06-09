@@ -23,27 +23,19 @@ class AppState: ObservableObject {
     var androidMirrorWindow = DeviceMirrorWindow()
     private var deviceManagerCancellable: AnyCancellable?
     private var captureEngineCancellable: AnyCancellable?
+    private var iosMirrorCancellable: AnyCancellable?
+    private var androidMirrorCancellable: AnyCancellable?
     private var screenParametersCancellable: AnyCancellable?
 
-    @Published var selectedSidebarItem: SidebarItem = .home
-    @Published var selectedMediaItem: MediaItem?
     @Published var pendingCaptureAction: CaptureType?
 
     // Capture UI state
     @Published var isVideoMode: Bool = false
     @Published var screenshotMode: CaptureMode = .area
-    @Published var copyToClipboard: Bool = true
-    @Published var screenshotTimerSeconds: Int = 0
-    @Published var screenshotTimerRunning: Bool = false
-    @Published var screenshotTimerRemaining: Int = 0
-    private var screenshotTimerTask: Task<Void, Never>?
 
     @Published var showAnnotationEditor: Bool = false
     @Published var annotationImage: NSImage?
     @Published var annotationState = AnnotationState()
-
-    @Published var showCountdown: Bool = false
-    @Published var countdownValue: Int = 3
 
     @Published var showNotification: Bool = false
     @Published var notificationMessage: String = ""
@@ -73,30 +65,6 @@ class AppState: ObservableObject {
         set { captureEngine.configuration = newValue }
     }
 
-    enum SidebarItem: String, CaseIterable, Identifiable {
-        case home = "Home"
-        case allMedia = "All Media"
-        case recordings = "Recordings"
-        case screenshots = "Screenshots"
-        case devices = "Devices"
-
-        var id: String { rawValue }
-
-        var iconName: String {
-            switch self {
-            case .home: return "house.fill"
-            case .allMedia: return "square.grid.2x2"
-            case .recordings: return "video.fill"
-            case .screenshots: return "photo.fill"
-            case .devices: return "iphone.and.arrow.forward"
-            }
-        }
-
-        static var libraryItems: [SidebarItem] {
-            [.allMedia, .recordings, .screenshots]
-        }
-    }
-
     func initialize() async {
         await permissionsManager.checkAllPermissions()
         await captureEngine.refreshAvailableContent()
@@ -108,11 +76,20 @@ class AppState: ObservableObject {
             self?.recordingAreaOverlayController.closeOverlay()
             self?.showErrorNotification(message)
         }
+        captureEngine.onWarning = { [weak self] message in
+            self?.showErrorNotification(message)
+        }
 
+        // @Published on reference types only fires on reassignment, so
+        // forward the sub-objects' changes for views that read them through
+        // appState (menu bar status, recording duration, ...).
         deviceManagerCancellable = deviceManager.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         captureEngineCancellable = captureEngine.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        iosMirrorCancellable = iosDeviceMirror.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         screenParametersCancellable = NotificationCenter.default
@@ -125,13 +102,24 @@ class AppState: ObservableObject {
     }
 
     private func setupAndroidMirror() {
-        if let adb = deviceManager.adbPath {
-            androidDeviceMirror = AndroidDeviceMirror(adbPath: adb, scrcpyPath: deviceManager.scrcpyPath)
-        }
-    }
+        guard let adb = deviceManager.adbPath else { return }
 
-    private func requestNativeIOSMirrorAccess() async -> Bool {
-        await permissionsManager.requestCameraPermission()
+        let mirror = AndroidDeviceMirror(adbPath: adb, scrcpyPath: deviceManager.scrcpyPath)
+        mirror.onRecordingAutoStopped = { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, let mirror = self.androidDeviceMirror else { return }
+                if let url = await mirror.stopRecording() {
+                    await self.mediaLibrary.addRecording(at: url)
+                    self.showSavedNotification("Android recording hit the 3-minute system limit and was saved")
+                } else {
+                    self.showErrorNotification(mirror.errorMessage ?? "Android recording stopped unexpectedly")
+                }
+            }
+        }
+        androidMirrorCancellable = mirror.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        androidDeviceMirror = mirror
     }
 
     // MARK: - Device Mirroring Actions
@@ -190,6 +178,73 @@ class AppState: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// How an iOS mirror ended up on screen after running the transport
+    /// ladder (native → low-latency H.264 → screenshot compatibility).
+    private enum IOSMirrorMode {
+        case native
+        case lowLatency
+        case compatibility
+    }
+
+    /// Runs the iOS mirror transport ladder shared by plain mirroring and
+    /// mirror-with-recording. Returns the mode that ended up active, or nil
+    /// when everything failed (an error notification was already shown).
+    private func openIOSMirror(udid: String, deviceName: String) async -> IOSMirrorMode? {
+        if !iosDeviceMirror.isMirroring {
+            // Avoid the native CoreMediaIO iOS screen-capture path for now.
+            // On macOS 26 it can crash the process after falling back to the
+            // in-app mirror, so try H.264 low latency without native preview.
+            iosDeviceMirror.startMirroring(udid: udid, deviceName: deviceName, allowNative: false)
+        }
+        guard iosDeviceMirror.isMirroring else {
+            showErrorNotification(iosDeviceMirror.errorMessage ?? "Failed to start iOS mirroring")
+            return nil
+        }
+
+        if iosDeviceMirror.isNativeMirroring {
+            iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: deviceName, appState: self)
+            if await iosDeviceMirror.waitForNativeStartup() {
+                return .native
+            }
+            let startupError = iosDeviceMirror.errorMessage ?? "Native iPhone mirror opened, but no video frames arrived."
+            return fallBackToCompatibilityMirror(udid: udid, deviceName: deviceName, startupError: startupError)
+        }
+
+        if iosDeviceMirror.isLowLatencyMirroring {
+            if await iosDeviceMirror.waitForLowLatencyStartup() {
+                return .lowLatency
+            }
+            let startupError = iosDeviceMirror.errorMessage ?? "iPhone mirror closed before the player window opened."
+            return fallBackToCompatibilityMirror(udid: udid, deviceName: deviceName, startupError: startupError)
+        }
+
+        iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: deviceName, appState: self)
+        return .compatibility
+    }
+
+    private func fallBackToCompatibilityMirror(udid: String, deviceName: String, startupError: String) -> IOSMirrorMode? {
+        iosDeviceMirror.startFallbackMirroring(udid: udid, deviceName: deviceName)
+        guard iosDeviceMirror.isMirroring else {
+            showErrorNotification(startupError)
+            return nil
+        }
+        iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: deviceName, appState: self)
+        return .compatibility
+    }
+
+    /// Sets up (or reuses) the Android mirror, returning nil with an error
+    /// notification when ADB is missing.
+    private func preparedAndroidMirror() -> AndroidDeviceMirror? {
+        if androidDeviceMirror == nil || androidDeviceMirror?.isMirroring == false {
+            setupAndroidMirror()
+        }
+        guard let mirror = androidDeviceMirror else {
+            showErrorNotification("ADB not installed. Install via Homebrew: brew install android-platform-tools")
+            return nil
+        }
+        return mirror
+    }
+
     func startDeviceMirroring(device: ConnectedDevice) async {
         switch device.platform {
         case .iOS:
@@ -202,69 +257,28 @@ class AppState: ObservableObject {
                 if iosDeviceMirror.isLowLatencyMirroring {
                     iosDeviceMirror.bringLowLatencyMirrorWindowToFront()
                     showSavedNotification("iPhone mirror is already open in low-latency mode")
-                } else if iosDeviceMirror.isNativeMirroring {
-                    iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-                    showSavedNotification("iPhone mirror is already open in native mode")
                 } else {
                     iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
+                    if iosDeviceMirror.isNativeMirroring {
+                        showSavedNotification("iPhone mirror is already open in native mode")
+                    }
                 }
                 return
             }
-            // Avoid the native CoreMediaIO iOS screen-capture path for now.
-            // On macOS 26 it can crash the process after falling back to the
-            // in-app mirror, so try H.264 low latency without native preview.
-            iosDeviceMirror.startMirroring(udid: udid, deviceName: device.name, allowNative: false)
-            if iosDeviceMirror.isMirroring {
-                if iosDeviceMirror.isNativeMirroring {
-                    iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-                    if await iosDeviceMirror.waitForNativeStartup() {
-                        showSavedNotification("iPhone mirror opened in native low-latency mode")
-                    } else {
-                        let startupError = iosDeviceMirror.errorMessage ?? "Native iPhone mirror opened, but no video frames arrived."
-                        iosDeviceMirror.startFallbackMirroring(udid: udid, deviceName: device.name)
-                        if iosDeviceMirror.isMirroring {
-                            iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-                            showSavedNotification("Opened iPhone mirror in compatibility mode because native video stayed black")
-                        } else {
-                            showErrorNotification(startupError)
-                        }
-                    }
-                } else if iosDeviceMirror.isLowLatencyMirroring {
-                    if await iosDeviceMirror.waitForLowLatencyStartup() {
-                        showSavedNotification("iPhone mirror opened in low-latency mode")
-                    } else {
-                        let startupError = iosDeviceMirror.errorMessage ?? "iPhone mirror closed before the player window opened."
-                        iosDeviceMirror.startFallbackMirroring(udid: udid, deviceName: device.name)
-                        if iosDeviceMirror.isMirroring {
-                            iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-                            showSavedNotification("Opened iPhone mirror in compatibility mode")
-                        } else {
-                            showErrorNotification(startupError)
-                        }
-                    }
-                } else {
-                    iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-                    showSavedNotification("Opened iPhone mirror in compatibility mode")
-                }
-            } else if let error = iosDeviceMirror.errorMessage {
-                showErrorNotification(error)
-            } else {
-                showErrorNotification("Failed to start iOS mirroring")
+
+            switch await openIOSMirror(udid: udid, deviceName: device.name) {
+            case .native:
+                showSavedNotification("iPhone mirror opened in native low-latency mode")
+            case .lowLatency:
+                showSavedNotification("iPhone mirror opened in low-latency mode")
+            case .compatibility:
+                showSavedNotification("Opened iPhone mirror in compatibility mode")
+            case nil:
+                break
             }
 
         case .android:
-            if androidDeviceMirror == nil || androidDeviceMirror?.isMirroring == false {
-                setupAndroidMirror()
-            }
-            guard let mirror = androidDeviceMirror else {
-                setupAndroidMirror()
-                guard androidDeviceMirror != nil else {
-                    showErrorNotification("ADB not installed. Install via Homebrew: brew install android-platform-tools")
-                    return
-                }
-                await startDeviceMirroring(device: device)
-                return
-            }
+            guard let mirror = preparedAndroidMirror() else { return }
             mirror.startMirroring(device: device)
             if mirror.isLowLatencyMirroring {
                 showSavedNotification("Android mirror opened in low-latency mode")
@@ -282,60 +296,23 @@ class AppState: ObservableObject {
                 return
             }
 
-            if !iosDeviceMirror.isMirroring {
-                iosDeviceMirror.startMirroring(udid: udid, deviceName: device.name, allowNative: false)
-            }
-            if iosDeviceMirror.isNativeMirroring {
-                iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-
-                if await iosDeviceMirror.waitForNativeStartup() {
-                    showSavedNotification("Use Start Recording and select the iPhone mirror window")
-                } else {
-                    let startupError = iosDeviceMirror.errorMessage ?? "Native iPhone mirror opened, but no video frames arrived."
-                    iosDeviceMirror.startFallbackMirroring(udid: udid, deviceName: device.name)
-                    if iosDeviceMirror.isMirroring {
-                        iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-                        showSavedNotification("Opened iPhone mirror in compatibility mode")
-                    } else {
-                        showErrorNotification(startupError)
-                    }
+            switch await openIOSMirror(udid: udid, deviceName: device.name) {
+            case .native, .lowLatency:
+                showSavedNotification("Use Start Recording and select the iPhone mirror window")
+            case .compatibility:
+                for _ in 0..<20 where iosDeviceMirror.currentFrame == nil {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
                 }
-                return
-            }
-            if iosDeviceMirror.isLowLatencyMirroring {
-                if await iosDeviceMirror.waitForLowLatencyStartup() {
-                    showSavedNotification("Use Start Recording and select the iPhone mirror window")
-                } else {
-                    let startupError = iosDeviceMirror.errorMessage ?? "iPhone mirror closed before the player window opened."
-                    iosDeviceMirror.startFallbackMirroring(udid: udid, deviceName: device.name)
-                    if iosDeviceMirror.isMirroring {
-                        iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-                        showSavedNotification("Opened iPhone mirror in compatibility mode")
-                    } else {
-                        showErrorNotification(startupError)
-                    }
+                iosDeviceMirror.startRecording()
+                if !iosDeviceMirror.isRecording {
+                    showErrorNotification(iosDeviceMirror.errorMessage ?? "Failed to start iPhone recording")
                 }
-                return
-            }
-            iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-
-            for _ in 0..<20 where iosDeviceMirror.currentFrame == nil {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-
-            iosDeviceMirror.startRecording()
-            if !iosDeviceMirror.isRecording {
-                showErrorNotification(iosDeviceMirror.errorMessage ?? "Failed to start iPhone recording")
+            case nil:
+                break
             }
 
         case .android:
-            if androidDeviceMirror == nil || androidDeviceMirror?.isMirroring == false {
-                setupAndroidMirror()
-            }
-            guard let mirror = androidDeviceMirror else {
-                showErrorNotification("ADB not installed. Install via Homebrew: brew install android-platform-tools")
-                return
-            }
+            guard let mirror = preparedAndroidMirror() else { return }
             mirror.startMirroring(device: device)
             if mirror.isLowLatencyMirroring {
                 showSavedNotification("Use Start Recording and select the Android mirror window")
@@ -400,7 +377,7 @@ class AppState: ObservableObject {
 
         switch mode {
         case .fullScreen:
-            await performCountdownAndRecord()
+            await startEngineRecording()
         case .window:
             pendingCaptureAction = .recording
             showWindowSelection()
@@ -423,7 +400,10 @@ class AppState: ObservableObject {
     }
 
     private func onWindowSelected(_ windowID: CGWindowID) async {
-        guard await ensureReadyForCapture() else { return }
+        guard await ensureReadyForCapture() else {
+            pendingCaptureAction = nil
+            return
+        }
         await captureEngine.refreshAvailableContent()
 
         // Brief delay to let the overlay disappear before capturing
@@ -442,7 +422,7 @@ class AppState: ObservableObject {
             case .recording:
                 configuration.mode = .window
                 configuration.selectedWindow = scWindow
-                await performCountdownAndRecord()
+                await startEngineRecording()
             case .screenshot:
                 if let image = await screenshotService.captureWindow(scWindow) {
                     copyImageToClipboard(image)
@@ -493,7 +473,7 @@ class AppState: ObservableObject {
             case .recording:
                 configuration.mode = .area
                 recordingAreaOverlayController.showOverlay(recordingRect: rect)
-                await performCountdownAndRecord()
+                await startEngineRecording()
             case .screenshot:
                 await takeAreaScreenshot(area: rect)
             case .textCapture:
@@ -508,7 +488,7 @@ class AppState: ObservableObject {
         pendingCaptureAction = nil
     }
 
-    private func performCountdownAndRecord() async {
+    private func startEngineRecording() async {
         await captureEngine.startRecording()
         if captureEngine.state == .idle {
             recordingAreaOverlayController.closeOverlay()
@@ -608,8 +588,8 @@ class AppState: ObservableObject {
     func saveAnnotatedScreenshot(_ image: NSImage) async {
         showAnnotationEditor = false
         annotationWindowController.closeWindow()
-        if let _ = screenshotService.saveScreenshot(image, annotated: annotationState.items.isEmpty == false) {
-            await mediaLibrary.addScreenshot(at: MediaLibraryManager.screenshotsDirectory)
+        if let url = screenshotService.saveScreenshot(image, annotated: annotationState.items.isEmpty == false) {
+            await mediaLibrary.addScreenshot(at: url)
             showSaveNotification("Screenshot saved")
         }
         annotationImage = nil
@@ -619,8 +599,8 @@ class AppState: ObservableObject {
         showAnnotationEditor = false
         annotationWindowController.closeWindow()
         if let image = annotationImage {
-            if let _ = screenshotService.saveScreenshot(image, annotated: false) {
-                await mediaLibrary.addScreenshot(at: MediaLibraryManager.screenshotsDirectory)
+            if let url = screenshotService.saveScreenshot(image, annotated: false) {
+                await mediaLibrary.addScreenshot(at: url)
                 showSaveNotification("Screenshot saved")
             }
         }
@@ -728,39 +708,12 @@ class AppState: ObservableObject {
     }
 
     private func saveTranslationOverlay(_ image: NSImage) async {
-        if screenshotService.saveScreenshot(image, annotated: true) != nil {
-            await mediaLibrary.addScreenshot(at: MediaLibraryManager.screenshotsDirectory)
+        if let url = screenshotService.saveScreenshot(image, annotated: true) {
+            await mediaLibrary.addScreenshot(at: url)
             showSaveNotification("Translation saved")
         } else if let error = screenshotService.errorMessage {
             showErrorNotification(error)
         }
-    }
-
-    // MARK: - Screenshot Timer
-
-    func startScreenshotTimer() {
-        guard screenshotTimerSeconds > 0 else {
-            Task { await captureScreenshot() }
-            return
-        }
-        screenshotTimerRemaining = screenshotTimerSeconds
-        screenshotTimerRunning = true
-        screenshotTimerTask = Task {
-            while screenshotTimerRemaining > 0 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                if Task.isCancelled { return }
-                screenshotTimerRemaining -= 1
-            }
-            screenshotTimerRunning = false
-            await captureScreenshot()
-        }
-    }
-
-    func resetScreenshotTimer() {
-        screenshotTimerTask?.cancel()
-        screenshotTimerTask = nil
-        screenshotTimerRunning = false
-        screenshotTimerRemaining = 0
     }
 
     func captureScreenshot() async {

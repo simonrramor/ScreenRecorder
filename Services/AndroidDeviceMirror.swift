@@ -25,8 +25,16 @@ class AndroidFrameGrabber: @unchecked Sendable {
     func start() {
         isRunning = true
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            // Cap the screencap fallback at ~10 fps; an unthrottled loop of
+            // adb launches pins a core for no visible benefit.
+            let minFrameInterval: TimeInterval = 0.1
             while self?.isRunning == true {
+                let start = CFAbsoluteTimeGetCurrent()
                 self?.captureFrame()
+                let elapsed = CFAbsoluteTimeGetCurrent() - start
+                if elapsed < minFrameInterval {
+                    Thread.sleep(forTimeInterval: minFrameInterval - elapsed)
+                }
             }
         }
     }
@@ -97,7 +105,20 @@ class AndroidInputHandler: @unchecked Sendable {
     }
 
     func text(_ text: String) {
-        let escaped = text.replacingOccurrences(of: " ", with: "%s")
+        // `input text` runs through the device shell: spaces map to %s and
+        // shell metacharacters must be backslash-escaped or they get eaten
+        // (or worse, interpreted) on the device side.
+        var escaped = ""
+        for character in text {
+            switch character {
+            case " ":
+                escaped += "%s"
+            case "\\", "\"", "'", "`", "$", "&", "|", ";", "(", ")", "<", ">", "*", "?", "~", "#":
+                escaped += "\\\(character)"
+            default:
+                escaped.append(character)
+            }
+        }
         runAdb("shell", "input", "text", escaped)
     }
 
@@ -124,6 +145,11 @@ class AndroidDeviceMirror: ObservableObject {
     @Published var errorMessage: String?
     @Published var mirroringDeviceName: String = ""
     @Published var deviceResolution: CGSize = CGSize(width: 1080, height: 2400)
+
+    /// Android's screenrecord hard-stops at its 3-minute cap. When that
+    /// happens mid-recording this fires (on the main actor) so the owner can
+    /// finalize the recording instead of letting the timer run forever.
+    var onRecordingAutoStopped: (() -> Void)?
 
     let adbPath: String
     private let scrcpyPath: String?
@@ -216,9 +242,20 @@ class AndroidDeviceMirror: ObservableObject {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: adbPath)
-        process.arguments = ["-s", serial, "shell", "screenrecord", "--size", "1280x720", "/sdcard/mirror_recording.mp4"]
+        // No --size: forcing 1280x720 distorts portrait devices. screenrecord
+        // picks the native display resolution on its own.
+        process.arguments = ["-s", serial, "shell", "screenrecord", "/sdcard/mirror_recording.mp4"]
         process.standardOutput = Pipe()
         process.standardError = Pipe()
+
+        process.terminationHandler = { [weak self, weak process] _ in
+            Task { @MainActor [weak self, weak process] in
+                guard let self, let process,
+                      self.recordingProcess === process,
+                      self.isRecording else { return }
+                self.onRecordingAutoStopped?()
+            }
+        }
 
         do {
             try process.run()
@@ -269,7 +306,11 @@ class AndroidDeviceMirror: ObservableObject {
             }
         }
 
-        return FileManager.default.fileExists(atPath: localURL.path) ? localURL : nil
+        guard FileManager.default.fileExists(atPath: localURL.path) else {
+            errorMessage = "Failed to pull the recording from the device."
+            return nil
+        }
+        return localURL
     }
 
     func takeScreenshot() -> NSImage? {

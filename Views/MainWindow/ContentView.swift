@@ -12,11 +12,6 @@ struct ContentView: View {
                 .cornerRadius(12)
                 .preferredColorScheme(.dark)
 
-            if appState.showCountdown {
-                CountdownView(value: appState.countdownValue)
-                    .transition(.opacity)
-            }
-
             if appState.showNotification {
                 VStack {
                     Spacer()
@@ -371,12 +366,11 @@ struct TranslationSettingsSection: View {
                     Label("Anthropic API Key", systemImage: "key.fill")
                         .font(.system(size: 12))
 
+                    // Saved on submit/close rather than per keystroke so we
+                    // don't hit the Keychain for every character typed.
                     SecureField("sk-ant-...", text: $apiKeyDraft)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { settings.setClaudeAPIKey(apiKeyDraft) }
-                        .onChange(of: apiKeyDraft) { _, new in
-                            settings.setClaudeAPIKey(new)
-                        }
 
                     HStack(spacing: 4) {
                         Image(systemName: settings.hasClaudeAPIKey ? "checkmark.circle.fill" : "exclamationmark.circle")
@@ -401,6 +395,9 @@ struct TranslationSettingsSection: View {
         }
         .onAppear {
             apiKeyDraft = settings.claudeAPIKey ?? ""
+        }
+        .onDisappear {
+            settings.setClaudeAPIKey(apiKeyDraft)
         }
     }
 }

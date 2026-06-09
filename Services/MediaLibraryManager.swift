@@ -14,7 +14,7 @@ class MediaLibraryManager: ObservableObject {
     }
 
     static var recordingsDirectory: URL {
-        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+        baseDirectory.appendingPathComponent("Recordings")
     }
 
     static var screenshotsDirectory: URL {
@@ -41,56 +41,62 @@ class MediaLibraryManager: ObservableObject {
         }
 
         var items: [MediaItem] = []
-
         for file in files {
-            let ext = file.pathExtension.lowercased()
-            let isValidType: Bool
-            switch type {
-            case .recording:
-                isValidType = ["mp4", "mov", "m4v"].contains(ext)
-            case .screenshot:
-                isValidType = ["png", "jpg", "jpeg", "tiff"].contains(ext)
+            if let item = await makeItem(for: file, type: type) {
+                items.append(item)
             }
-
-            guard isValidType else { continue }
-
-            let attributes = try? fm.attributesOfItem(atPath: file.path)
-            let fileSize = (attributes?[.size] as? Int64) ?? 0
-            let createdAt = (attributes?[.creationDate] as? Date) ?? Date()
-
-            var duration: TimeInterval?
-            var thumbnail: NSImage?
-
-            if type == .recording {
-                let asset = AVURLAsset(url: file)
-                duration = try? await asset.load(.duration).seconds
-                thumbnail = await generateVideoThumbnail(for: file)
-            } else {
-                thumbnail = NSImage(contentsOf: file)
-                if let thumb = thumbnail {
-                    let maxSize: CGFloat = 200
-                    let ratio = min(maxSize / thumb.size.width, maxSize / thumb.size.height, 1.0)
-                    let newSize = NSSize(width: thumb.size.width * ratio, height: thumb.size.height * ratio)
-                    let resized = NSImage(size: newSize)
-                    resized.lockFocus()
-                    thumb.draw(in: NSRect(origin: .zero, size: newSize))
-                    resized.unlockFocus()
-                    thumbnail = resized
-                }
-            }
-
-            items.append(MediaItem(
-                id: UUID(),
-                url: file,
-                type: type,
-                createdAt: createdAt,
-                fileSize: fileSize,
-                duration: duration,
-                thumbnail: thumbnail
-            ))
         }
 
         return items.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private func makeItem(for file: URL, type: MediaItem.MediaType) async -> MediaItem? {
+        let fm = FileManager.default
+        let ext = file.pathExtension.lowercased()
+        let isValidType: Bool
+        switch type {
+        case .recording:
+            isValidType = ["mp4", "mov", "m4v"].contains(ext)
+        case .screenshot:
+            isValidType = ["png", "jpg", "jpeg", "tiff"].contains(ext)
+        }
+
+        guard isValidType else { return nil }
+
+        let attributes = try? fm.attributesOfItem(atPath: file.path)
+        let fileSize = (attributes?[.size] as? Int64) ?? 0
+        let createdAt = (attributes?[.creationDate] as? Date) ?? Date()
+
+        var duration: TimeInterval?
+        var thumbnail: NSImage?
+
+        if type == .recording {
+            let asset = AVURLAsset(url: file)
+            duration = try? await asset.load(.duration).seconds
+            thumbnail = await generateVideoThumbnail(for: file)
+        } else {
+            thumbnail = NSImage(contentsOf: file)
+            if let thumb = thumbnail {
+                let maxSize: CGFloat = 200
+                let ratio = min(maxSize / thumb.size.width, maxSize / thumb.size.height, 1.0)
+                let newSize = NSSize(width: thumb.size.width * ratio, height: thumb.size.height * ratio)
+                let resized = NSImage(size: newSize)
+                resized.lockFocus()
+                thumb.draw(in: NSRect(origin: .zero, size: newSize))
+                resized.unlockFocus()
+                thumbnail = resized
+            }
+        }
+
+        return MediaItem(
+            id: UUID(),
+            url: file,
+            type: type,
+            createdAt: createdAt,
+            fileSize: fileSize,
+            duration: duration,
+            thumbnail: thumbnail
+        )
     }
 
     private func generateVideoThumbnail(for url: URL) async -> NSImage? {
@@ -108,7 +114,8 @@ class MediaLibraryManager: ObservableObject {
     }
 
     func deleteItem(_ item: MediaItem) {
-        try? FileManager.default.removeItem(at: item.url)
+        // Trash rather than unlink so an accidental delete is recoverable.
+        try? FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
         recordings.removeAll { $0.id == item.id }
         screenshots.removeAll { $0.id == item.id }
         allItems.removeAll { $0.id == item.id }
@@ -122,11 +129,17 @@ class MediaLibraryManager: ObservableObject {
         NSWorkspace.shared.open(item.url)
     }
 
+    /// Appends a single freshly saved file instead of rescanning the whole
+    /// library (which regenerates every thumbnail) after each capture.
     func addRecording(at url: URL) async {
-        await loadLibrary()
+        guard let item = await makeItem(for: url, type: .recording) else { return }
+        recordings.insert(item, at: 0)
+        allItems.insert(item, at: 0)
     }
 
     func addScreenshot(at url: URL) async {
-        await loadLibrary()
+        guard let item = await makeItem(for: url, type: .screenshot) else { return }
+        screenshots.insert(item, at: 0)
+        allItems.insert(item, at: 0)
     }
 }

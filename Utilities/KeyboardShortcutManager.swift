@@ -9,9 +9,13 @@ class KeyboardShortcutManager {
     private var eventHandler: EventHandlerRef?
     private var idToAction: [UInt32: ShortcutAction] = [:]
 
+    // The Carbon hot-key callback is a C function pointer that can't capture
+    // context, so it reaches the manager through this static. Only one
+    // instance may exist at a time or hot keys would route to the wrong one.
     private static var shared: KeyboardShortcutManager?
 
     init(appState: AppState) {
+        assert(KeyboardShortcutManager.shared == nil, "KeyboardShortcutManager must only be created once")
         self.appState = appState
         KeyboardShortcutManager.shared = self
     }

@@ -222,11 +222,8 @@ struct MenuBarView: View {
 
     private var bottomSection: some View {
         VStack(spacing: 4) {
-            MenuBarButton(icon: "folder", title: "Open Library") {
-                NSApp.activate(ignoringOtherApps: true)
-                if let window = NSApp.windows.first(where: { $0.title.contains("Captr") || $0.contentView is NSHostingView<ContentView> }) {
-                    window.makeKeyAndOrderFront(nil)
-                }
+            MenuBarButton(icon: "folder", title: "Open Media Folder") {
+                NSWorkspace.shared.open(MediaLibraryManager.baseDirectory)
             }
 
             Button {

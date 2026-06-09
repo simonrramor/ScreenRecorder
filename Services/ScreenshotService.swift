@@ -19,8 +19,9 @@ class ScreenshotService: ObservableObject {
         do {
             let filter = SCContentFilter(display: display, excludingWindows: [])
             let config = SCStreamConfiguration()
-            config.width = Int(display.width) * 2
-            config.height = Int(display.height) * 2
+            let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
+            config.width = Int(CGFloat(display.width) * scale)
+            config.height = Int(CGFloat(display.height) * scale)
             config.showsCursor = true
             config.capturesAudio = false
             config.pixelFormat = kCVPixelFormatType_32BGRA
@@ -50,10 +51,9 @@ class ScreenshotService: ObservableObject {
             config.pixelFormat = kCVPixelFormatType_32BGRA
             config.scalesToFit = false
 
-            if let frame = Optional(window.frame) {
-                config.width = Int(frame.width) * 2
-                config.height = Int(frame.height) * 2
-            }
+            let scale = ScreenGeometry.backingScale(forCGRect: window.frame) ?? 2.0
+            config.width = Int(window.frame.width * scale)
+            config.height = Int(window.frame.height * scale)
 
             let image = try await SCScreenshotManager.captureImage(
                 contentFilter: filter,
@@ -94,8 +94,9 @@ class ScreenshotService: ObservableObject {
 
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
-        config.width = Int(display.width) * 2
-        config.height = Int(display.height) * 2
+        let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
+        config.width = Int(CGFloat(display.width) * scale)
+        config.height = Int(CGFloat(display.height) * scale)
         config.showsCursor = false
         config.capturesAudio = false
         config.pixelFormat = kCVPixelFormatType_32BGRA

@@ -647,28 +647,13 @@ class IOSDeviceMirror: ObservableObject {
         nativeLifecycleObserverRemovers.forEach { $0() }
     }
 
-    // Paths
-    static let pythonPath = "\(NSHomeDirectory())/.pymobiledevice3-venv/bin/python3.13"
-    static let pymobiledevicePath = "\(NSHomeDirectory())/.pymobiledevice3-venv/bin/pymobiledevice3"
-    static let ideviceIdPath = "/opt/homebrew/bin/idevice_id"
-    static var ffplayPath: String? {
-        [
-            "/opt/homebrew/bin/ffplay",
-            "/usr/local/bin/ffplay"
-        ].first { FileManager.default.fileExists(atPath: $0) }
-    }
+    // Tool paths, resolved per call so installing a tool while the app is
+    // running is picked up.
+    static var pythonPath: String? { ToolLocator.pymobiledevicePython }
+    static var ffplayPath: String? { ToolLocator.ffplay }
 
-    // Path to streaming script (bundled in app or in source tree)
-    static var streamScriptPath: String {
-        if let bundled = Bundle.main.path(forResource: "ios_stream", ofType: "py") {
-            return bundled
-        }
-        return "\(NSHomeDirectory())/ScreenRecorder/Resources/ios_stream.py"
-    }
-
-    static var isAvailable: Bool {
-        FileManager.default.fileExists(atPath: pythonPath) &&
-        FileManager.default.fileExists(atPath: ideviceIdPath)
+    static var streamScriptPath: String? {
+        Bundle.main.path(forResource: "ios_stream", ofType: "py")
     }
 
     func startMirroring(udid: String, deviceName: String, allowNative: Bool = true) {
@@ -694,16 +679,22 @@ class IOSDeviceMirror: ObservableObject {
             stopMirroring()
         }
 
+        guard let pythonPath = Self.pythonPath, let scriptPath = Self.streamScriptPath else {
+            errorMessage = "iPhone mirroring needs the pymobiledevice3 environment (~/.pymobiledevice3-venv). See the setup instructions."
+            return
+        }
+
         mirroringDeviceName = deviceName
         mirroringDeviceUDID = udid
         isLowLatencyMirroring = false
         isNativeMirroring = false
         lowLatencyErrorOutput = ""
 
-        // Ensure tunneld is running (needed for iOS 17+)
+        // Ensure tunneld is running (needed for iOS 17+). Runs in the
+        // background; the frame grabber retries until the tunnel is up.
         ensureTunneld()
 
-        let grabber = IOSFrameGrabber(pythonPath: Self.pythonPath, scriptPath: Self.streamScriptPath, udid: udid)
+        let grabber = IOSFrameGrabber(pythonPath: pythonPath, scriptPath: scriptPath, udid: udid)
         grabber.onFrame = { [weak self] image in
             Task { @MainActor [weak self] in
                 guard let self = self, self.isMirroring else { return }
@@ -944,14 +935,18 @@ class IOSDeviceMirror: ObservableObject {
             errorMessage = "ffplay not found. Falling back to screenshot mirroring."
             return false
         }
+        guard let pythonPath = Self.pythonPath, let scriptPath = Self.streamScriptPath else {
+            errorMessage = "pymobiledevice3 environment not found. Falling back to screenshot mirroring."
+            return false
+        }
 
         let pipe = Pipe()
         let streamErrorPipe = Pipe()
         let playerErrorPipe = Pipe()
 
         let streamProcess = Process()
-        streamProcess.executableURL = URL(fileURLWithPath: Self.pythonPath)
-        streamProcess.arguments = [Self.streamScriptPath, "--h264", udid]
+        streamProcess.executableURL = URL(fileURLWithPath: pythonPath)
+        streamProcess.arguments = [scriptPath, "--h264", udid]
         streamProcess.standardOutput = pipe
         streamProcess.standardError = streamErrorPipe
 
@@ -1098,8 +1093,25 @@ class IOSDeviceMirror: ObservableObject {
 
     // MARK: - Tunneld Management
 
+    /// Starts the pymobiledevice3 tunneld daemon if it isn't already running.
+    /// All process work happens off the main actor; the frame grabber retries
+    /// every second, so the stream recovers once the tunnel comes up. macOS
+    /// requires tunneld to run as root, so the user is asked before the
+    /// admin-privileges prompt appears.
     private func ensureTunneld() {
-        // Check if tunneld is already running
+        guard let pymobiledevicePath = ToolLocator.pymobiledevice3 else { return }
+
+        Task.detached(priority: .utility) {
+            guard !Self.isTunneldRunning() else { return }
+
+            let approved = await MainActor.run { Self.confirmTunneldStart() }
+            guard approved else { return }
+
+            Self.startTunneld(pymobiledevicePath: pymobiledevicePath)
+        }
+    }
+
+    nonisolated private static func isTunneldRunning() -> Bool {
         let checkProcess = Process()
         checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
         checkProcess.arguments = ["-f", "pymobiledevice3 remote tunneld"]
@@ -1110,12 +1122,21 @@ class IOSDeviceMirror: ObservableObject {
         checkProcess.waitUntilExit()
 
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        if !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return // tunneld already running
-        }
+        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
-        // Start tunneld via osascript with admin privileges
-        let script = "do shell script \"\(Self.pymobiledevicePath.replacingOccurrences(of: "\"", with: "\\\"")) remote tunneld -d\" with administrator privileges"
+    @MainActor
+    private static func confirmTunneldStart() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Start iPhone streaming helper?"
+        alert.informativeText = "Mirroring iOS 17+ devices needs the pymobiledevice3 \"tunneld\" helper, which macOS requires to run with administrator privileges. You'll be asked for your password."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    nonisolated private static func startTunneld(pymobiledevicePath: String) {
+        let script = "do shell script \"\(pymobiledevicePath.replacingOccurrences(of: "\"", with: "\\\"")) remote tunneld -d\" with administrator privileges"
         let osaProcess = Process()
         osaProcess.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         osaProcess.arguments = ["-e", script]
@@ -1123,49 +1144,6 @@ class IOSDeviceMirror: ObservableObject {
         osaProcess.standardError = Pipe()
         try? osaProcess.run()
         osaProcess.waitUntilExit()
-
-        // Give tunneld a moment to start
-        Thread.sleep(forTimeInterval: 2.0)
-    }
-
-    // MARK: - Device Discovery
-
-    static func listDevices() -> [(udid: String, name: String)] {
-        guard FileManager.default.fileExists(atPath: ideviceIdPath) else { return [] }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: ideviceIdPath)
-        process.arguments = ["-l"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        try? process.run()
-        process.waitUntilExit()
-
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        var devices: [(udid: String, name: String)] = []
-
-        for line in output.components(separatedBy: "\n") {
-            let udid = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !udid.isEmpty else { continue }
-
-            // Get device name
-            let nameProcess = Process()
-            nameProcess.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ideviceinfo")
-            nameProcess.arguments = ["-u", udid, "-k", "DeviceName"]
-            let namePipe = Pipe()
-            nameProcess.standardOutput = namePipe
-            nameProcess.standardError = Pipe()
-            try? nameProcess.run()
-            nameProcess.waitUntilExit()
-
-            let name = String(data: namePipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "iOS Device"
-
-            devices.append((udid: udid, name: name.isEmpty ? "iOS Device" : name))
-        }
-
-        return devices
     }
 
     private func startDurationTimer() {

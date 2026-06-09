@@ -42,6 +42,10 @@ class DeviceManager: ObservableObject {
     private var deviceObservers: [NSObjectProtocol] = []
     private var scanTimer: Timer?
 
+    /// Device names cost one `ideviceinfo` launch each, so remember them per
+    /// UDID and only query devices we haven't seen before.
+    private var iosDeviceNameCache: [String: String] = [:]
+
     var adbAvailable: Bool { adbPath != nil }
     var scrcpyAvailable: Bool { scrcpyPath != nil }
     var iosDevices: [ConnectedDevice] { devices.filter { $0.platform == .iOS } }
@@ -59,7 +63,7 @@ class DeviceManager: ObservableObject {
         }
 
         // Periodic rescan for both iOS and Android devices
-        scanTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        scanTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.scanIOSDevices()
                 if self?.adbAvailable == true {
@@ -77,45 +81,51 @@ class DeviceManager: ObservableObject {
     }
 
     func findTools() {
-        let adbPaths = [
-            "/opt/homebrew/bin/adb",
-            "/usr/local/bin/adb",
-            "\(NSHomeDirectory())/Library/Android/sdk/platform-tools/adb"
-        ]
-        adbPath = adbPaths.first { FileManager.default.fileExists(atPath: $0) }
-
-        let scrcpyPaths = [
-            "/opt/homebrew/bin/scrcpy",
-            "/usr/local/bin/scrcpy"
-        ]
-        scrcpyPath = scrcpyPaths.first { FileManager.default.fileExists(atPath: $0) }
+        adbPath = ToolLocator.adb
+        scrcpyPath = ToolLocator.scrcpy
     }
 
     func scanIOSDevices() {
-        guard FileManager.default.fileExists(atPath: IOSDeviceMirror.ideviceIdPath) else { return }
+        guard let ideviceIdPath = ToolLocator.ideviceId else { return }
 
-        let ideviceIdPath = IOSDeviceMirror.ideviceIdPath
+        let ideviceInfoPath = ToolLocator.ideviceInfo
+        let knownNames = iosDeviceNameCache
         Task.detached {
-            let iosDevices = DeviceManager.scanIOSDevicesSync(ideviceIdPath: ideviceIdPath)
+            let iosDevices = DeviceManager.scanIOSDevicesSync(
+                ideviceIdPath: ideviceIdPath,
+                ideviceInfoPath: ideviceInfoPath,
+                knownNames: knownNames
+            )
 
             await MainActor.run { [weak self] in
-                let android = self?.devices.filter { $0.platform == .android } ?? []
-                self?.devices = iosDevices + android
+                self?.applyIOSScanResult(iosDevices)
             }
         }
     }
 
     func refreshIOSDevicesNow() async -> [ConnectedDevice] {
-        let ideviceIdPath = IOSDeviceMirror.ideviceIdPath
-        guard FileManager.default.fileExists(atPath: ideviceIdPath) else { return [] }
+        guard let ideviceIdPath = ToolLocator.ideviceId else { return [] }
 
+        let ideviceInfoPath = ToolLocator.ideviceInfo
+        let knownNames = iosDeviceNameCache
         let iosDevices = await Task.detached {
-            DeviceManager.scanIOSDevicesSync(ideviceIdPath: ideviceIdPath)
+            DeviceManager.scanIOSDevicesSync(
+                ideviceIdPath: ideviceIdPath,
+                ideviceInfoPath: ideviceInfoPath,
+                knownNames: knownNames
+            )
         }.value
 
+        applyIOSScanResult(iosDevices)
+        return iosDevices
+    }
+
+    private func applyIOSScanResult(_ iosDevices: [ConnectedDevice]) {
+        for device in iosDevices {
+            iosDeviceNameCache[device.id] = device.name
+        }
         let android = devices.filter { $0.platform == .android }
         devices = iosDevices + android
-        return iosDevices
     }
 
     func iosConnectionIssueMessage() async -> String {
@@ -145,41 +155,32 @@ class DeviceManager: ObservableObject {
         return defaultMessage
     }
 
-    nonisolated private static func scanIOSDevicesSync(ideviceIdPath: String) -> [ConnectedDevice] {
-        guard FileManager.default.fileExists(atPath: ideviceIdPath) else { return [] }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: ideviceIdPath)
-        process.arguments = ["-l"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        try? process.run()
-        process.waitUntilExit()
-
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    nonisolated private static func scanIOSDevicesSync(
+        ideviceIdPath: String,
+        ideviceInfoPath: String?,
+        knownNames: [String: String]
+    ) -> [ConnectedDevice] {
+        let output = runCommand(ideviceIdPath, arguments: ["-l"])
         var devices: [ConnectedDevice] = []
 
         for line in output.components(separatedBy: "\n") {
             let udid = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !udid.isEmpty else { continue }
 
-            // Get device name
-            let nameProcess = Process()
-            nameProcess.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ideviceinfo")
-            nameProcess.arguments = ["-u", udid, "-k", "DeviceName"]
-            let namePipe = Pipe()
-            nameProcess.standardOutput = namePipe
-            nameProcess.standardError = Pipe()
-            try? nameProcess.run()
-            nameProcess.waitUntilExit()
-
-            let name = String(data: namePipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "iOS Device"
+            let name: String
+            if let cached = knownNames[udid] {
+                name = cached
+            } else if let ideviceInfoPath {
+                let raw = runCommand(ideviceInfoPath, arguments: ["-u", udid, "-k", "DeviceName"])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                name = raw.isEmpty ? "iOS Device" : raw
+            } else {
+                name = "iOS Device"
+            }
 
             devices.append(ConnectedDevice(
                 id: udid,
-                name: name.isEmpty ? "iOS Device" : name,
+                name: name,
                 platform: .iOS,
                 iosUDID: udid
             ))
@@ -230,8 +231,7 @@ class DeviceManager: ObservableObject {
     }
 
     func installAndroidTools() async {
-        let brewPaths = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-        guard let brewPath = brewPaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+        guard let brewPath = ToolLocator.brew else {
             statusMessage = "Homebrew is required. Install from https://brew.sh first."
             return
         }

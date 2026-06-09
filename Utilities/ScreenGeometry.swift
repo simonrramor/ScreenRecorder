@@ -151,6 +151,21 @@ enum ScreenGeometry {
         }?.backingScaleFactor
     }
 
+    /// Backing scale of the display that contains most of the given
+    /// global-CG-coordinate rect (e.g. a window frame).
+    static func backingScale(forCGRect rect: CGRect) -> CGFloat? {
+        NSScreen.screens
+            .compactMap { screen -> (area: CGFloat, scale: CGFloat)? in
+                guard let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+                    return nil
+                }
+                let area = intersectionArea(rect, CGDisplayBounds(displayID))
+                return area > 0 ? (area, screen.backingScaleFactor) : nil
+            }
+            .max { $0.area < $1.area }?
+            .scale
+    }
+
     private static func intersectionArea(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
         let intersection = lhs.standardized.intersection(rhs.standardized)
         guard intersection.isNull == false, intersection.width > 0, intersection.height > 0 else {

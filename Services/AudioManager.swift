@@ -8,6 +8,10 @@ class AudioManager: NSObject {
     private var bufferHandler: ((CMSampleBuffer) -> Void)?
     private let sessionQueue = DispatchQueue(label: "com.screenrecorder.audio")
 
+    /// Called on the session queue when microphone capture cannot start, so
+    /// the recording UI can tell the user instead of failing silently.
+    var onError: ((String) -> Void)?
+
     var isMicrophoneActive: Bool {
         captureSession?.isRunning ?? false
     }
@@ -34,17 +38,19 @@ class AudioManager: NSObject {
         session.beginConfiguration()
 
         guard let microphone = AVCaptureDevice.default(for: .audio) else {
-            print("No microphone available")
+            onError?("no microphone available")
             return
         }
 
         do {
             let input = try AVCaptureDeviceInput(device: microphone)
-            if session.canAddInput(input) {
-                session.addInput(input)
+            guard session.canAddInput(input) else {
+                onError?("the microphone is unavailable")
+                return
             }
+            session.addInput(input)
         } catch {
-            print("Failed to create microphone input: \(error)")
+            onError?(error.localizedDescription)
             return
         }
 
