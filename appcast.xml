@@ -6,6 +6,24 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.1</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fixed Android mirroring: the scrcpy player couldn't locate adb when launched from the app, so the mirror window never appeared</li>
+                    <li>If the Android player fails to start, Captr now opens its built-in mirror window and shows the reason instead of failing silently</li>
+                    <li>The iOS button shows a connecting spinner while the iPhone mirror starts up</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 10 Jun 2026 10:52:04 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.1/Captr.dmg"
+                       sparkle:version="27"
+                       sparkle:shortVersionString="1.4.1"
+                       sparkle:edSignature="cgVu0mgaInJ/dJMaBCKFYoIYIvzTl/hhO36QdbZC8uzJkBwk9AWXBqPh20hcNqVmhaTQ6ZIkIs4PNUfZIQb3Ag=="
+                       length="2405746"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.0</title>
             <description><![CDATA[
                 <ul>
