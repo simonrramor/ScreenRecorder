@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.2</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fixed the Dock randomly appearing in screenshots: with Dock auto-hide enabled, ending an area selection near the screen edge slid the Dock in just as the capture fired. Area and full-screen captures now leave the auto-hidden Dock out.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 10 Jun 2026 15:44:34 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.2/Captr.dmg"
+                       sparkle:version="28"
+                       sparkle:shortVersionString="1.4.2"
+                       sparkle:edSignature="J+0hfdxMpSUw924Kw1jkbDlnXImcimUHFerWgXB/SIza+69FPtEAWE1UareoscGvCg7+aQ6184/5cV3RVXCPDw=="
+                       length="2411302"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.1</title>
             <description><![CDATA[
                 <ul>
