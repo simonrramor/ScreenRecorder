@@ -19,7 +19,6 @@ enum ToolLocator {
     static var brew: String? { find("brew") }
     static var ideviceId: String? { find("idevice_id") }
     static var ideviceInfo: String? { find("ideviceinfo") }
-    static var ffplay: String? { find("ffplay") }
 
     private static let pymobiledeviceVenvBin = "\(NSHomeDirectory())/.pymobiledevice3-venv/bin"
 

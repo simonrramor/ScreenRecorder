@@ -1,9 +1,10 @@
 import Foundation
 import AppKit
 import AVFoundation
+import VideoToolbox
 
-@MainActor
-private final class IOSMirrorVideoRecorder {
+final class IOSMirrorVideoRecorder: @unchecked Sendable {
+    private let lock = NSLock()
     private let outputURL: URL
     private let frameSize: CGSize
     private let writer: AVAssetWriter
@@ -12,6 +13,7 @@ private final class IOSMirrorVideoRecorder {
     private var lastPresentationTime: CMTime?
     private var didAppendFrame = false
     private var isFinishing = false
+    private var transferSession: VTPixelTransferSession?
 
     init(outputURL: URL, frameSize: CGSize) throws {
         self.outputURL = outputURL
@@ -31,7 +33,8 @@ private final class IOSMirrorVideoRecorder {
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
             ],
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: 8_000_000,
+                AVVideoAverageBitRateKey: 12_000_000,
+                AVVideoExpectedSourceFrameRateKey: 60,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
             ]
         ]
@@ -62,27 +65,95 @@ private final class IOSMirrorVideoRecorder {
     }
 
     func append(_ image: NSImage, elapsed: TimeInterval) {
+        guard let pixelBuffer = Self.makePixelBuffer(from: image, targetSize: frameSize) else { return }
+        appendSizedPixelBuffer(pixelBuffer, elapsed: elapsed)
+    }
+
+    /// Appends a captured frame using its real capture-clock offset, so the
+    /// written file reproduces the device's exact frame timing. Frames whose
+    /// dimensions differ from the recording canvas (odd-width devices,
+    /// mid-recording rotation) are letterboxed in hardware.
+    func append(_ pixelBuffer: CVPixelBuffer, elapsed: TimeInterval) {
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        if width == Int(frameSize.width) && height == Int(frameSize.height) {
+            appendSizedPixelBuffer(pixelBuffer, elapsed: elapsed)
+        } else if let scaled = letterboxed(pixelBuffer) {
+            appendSizedPixelBuffer(scaled, elapsed: elapsed)
+        }
+    }
+
+    private func appendSizedPixelBuffer(_ pixelBuffer: CVPixelBuffer, elapsed: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
         guard !isFinishing, input.isReadyForMoreMediaData else { return }
 
-        var presentationTime = CMTime(seconds: max(elapsed, 0), preferredTimescale: 600)
-        if let lastPresentationTime, CMTimeCompare(presentationTime, lastPresentationTime) <= 0 {
-            presentationTime = CMTimeAdd(lastPresentationTime, CMTime(value: 1, timescale: 600))
-        }
-
-        guard let pixelBuffer = Self.makePixelBuffer(from: image, targetSize: frameSize),
-              adaptor.append(pixelBuffer, withPresentationTime: presentationTime) else {
-            return
-        }
+        let presentationTime = Self.nextPresentationTime(elapsed: elapsed, after: lastPresentationTime)
+        guard adaptor.append(pixelBuffer, withPresentationTime: presentationTime) else { return }
 
         didAppendFrame = true
         lastPresentationTime = presentationTime
     }
 
-    func finish() async -> URL? {
-        guard !isFinishing else { return nil }
-        isFinishing = true
+    /// Clamps timestamps to be strictly increasing (AVAssetWriter rejects
+    /// non-monotonic appends) while staying on the capture clock otherwise.
+    static func nextPresentationTime(elapsed: TimeInterval, after last: CMTime?) -> CMTime {
+        var presentationTime = CMTime(seconds: max(elapsed, 0), preferredTimescale: 600)
+        if let last, CMTimeCompare(presentationTime, last) <= 0 {
+            presentationTime = CMTimeAdd(last, CMTime(value: 1, timescale: 600))
+        }
+        return presentationTime
+    }
 
-        if !didAppendFrame {
+    private func letterboxed(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+        lock.lock()
+        if transferSession == nil {
+            var session: VTPixelTransferSession?
+            if VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &session) == noErr,
+               let session {
+                VTSessionSetProperty(session, key: kVTPixelTransferPropertyKey_ScalingMode, value: kVTScalingMode_Letterbox)
+                transferSession = session
+            }
+        }
+        let session = transferSession
+        let pool = adaptor.pixelBufferPool
+        lock.unlock()
+
+        guard let session else { return nil }
+
+        var destination: CVPixelBuffer?
+        if let pool {
+            CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &destination)
+        }
+        if destination == nil {
+            CVPixelBufferCreate(
+                kCFAllocatorDefault,
+                Int(frameSize.width),
+                Int(frameSize.height),
+                kCVPixelFormatType_32BGRA,
+                [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary,
+                &destination
+            )
+        }
+        guard let destination else { return nil }
+
+        guard VTPixelTransferSessionTransferImage(session, from: source, to: destination) == noErr else {
+            return nil
+        }
+        return destination
+    }
+
+    func finish() async -> URL? {
+        lock.lock()
+        if isFinishing {
+            lock.unlock()
+            return nil
+        }
+        isFinishing = true
+        let appended = didAppendFrame
+        lock.unlock()
+
+        if !appended {
             input.markAsFinished()
             writer.cancelWriting()
             try? FileManager.default.removeItem(at: outputURL)
@@ -104,22 +175,33 @@ private final class IOSMirrorVideoRecorder {
     }
 
     func cancel() {
-        guard !isFinishing else { return }
+        lock.lock()
+        if isFinishing {
+            lock.unlock()
+            return
+        }
         isFinishing = true
+        lock.unlock()
+
         input.markAsFinished()
         writer.cancelWriting()
         try? FileManager.default.removeItem(at: outputURL)
     }
 
+    /// H.264 requires even dimensions; floors odd sizes (e.g. 1179-wide
+    /// iPhones) down by a pixel.
+    static func evenSize(_ size: CGSize) -> CGSize {
+        let width = max(2, Int(size.width.rounded()) & ~1)
+        let height = max(2, Int(size.height.rounded()) & ~1)
+        return CGSize(width: width, height: height)
+    }
+
     static func evenFrameSize(for image: NSImage) -> CGSize {
         var proposedRect = CGRect(origin: .zero, size: image.size)
         let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil)
-        var width = cgImage?.width ?? Int(max(image.size.width.rounded(), 2))
-        var height = cgImage?.height ?? Int(max(image.size.height.rounded(), 2))
-
-        width = max(2, width - (width % 2))
-        height = max(2, height - (height % 2))
-        return CGSize(width: width, height: height)
+        let width = cgImage?.width ?? Int(max(image.size.width.rounded(), 2))
+        let height = cgImage?.height ?? Int(max(image.size.height.rounded(), 2))
+        return evenSize(CGSize(width: width, height: height))
     }
 
     private static func makePixelBuffer(from image: NSImage, targetSize: CGSize) -> CVPixelBuffer? {
@@ -374,20 +456,31 @@ class IOSDeviceMirror: ObservableObject {
     @Published var currentFrame: NSImage?
     @Published var isLowLatencyMirroring = false
 
+    /// Hosts the native feed in the mirror window. Frames are enqueued from
+    /// the capture queue, so playback stays smooth even when the main thread
+    /// is busy.
+    let displayLayer = AVSampleBufferDisplayLayer()
+
+    /// Called when mirroring ends on its own (device unplugged, session
+    /// error) so the owner can close the mirror window.
+    var onMirroringEnded: ((String?) -> Void)?
+
+    private let frameRouter = IOSMirrorFrameRouter()
+    private var nativeFeed: IOSNativeScreenFeed?
     private var frameGrabber: IOSFrameGrabber?
-    private var lowLatencyStreamProcess: Process?
-    private var lowLatencyPlayerProcess: Process?
-    private var lowLatencyErrorOutput = ""
     private var durationTimer: Timer?
-    private var recordingFrameTimer: Timer?
     private var recordingStartDate: Date?
     private var mirroringDeviceUDID: String?
     private var videoRecorder: IOSMirrorVideoRecorder?
     private var terminationObserver: NSObjectProtocol?
 
     init() {
-        // Stop the streaming helper processes when the app quits so we don't
-        // leave orphaned python/ffplay children behind.
+        displayLayer.videoGravity = .resizeAspect
+        displayLayer.backgroundColor = NSColor.black.cgColor
+        displayLayer.wantsExtendedDynamicRangeContent = false
+
+        // Stop the capture session / streaming helper when the app quits so
+        // we don't leave orphaned children or a held camera device behind.
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
@@ -408,7 +501,6 @@ class IOSDeviceMirror: ObservableObject {
     // Tool paths, resolved per call so installing a tool while the app is
     // running is picked up.
     static var pythonPath: String? { ToolLocator.pymobiledevicePython }
-    static var ffplayPath: String? { ToolLocator.ffplay }
 
     static var streamScriptPath: String? {
         Bundle.main.path(forResource: "ios_stream", ofType: "py")
@@ -417,15 +509,77 @@ class IOSDeviceMirror: ObservableObject {
     func startMirroring(udid: String, deviceName: String) {
         guard !isMirroring else { return }
         errorMessage = nil
-        lowLatencyErrorOutput = ""
         mirroringDeviceName = deviceName
         mirroringDeviceUDID = udid
 
-        if startLowLatencyMirroring(udid: udid, deviceName: deviceName) {
-            return
+        // Optimistically enter native mode; waitForLowLatencyStartup()
+        // performs the actual startup and reports whether it worked, letting
+        // the caller fall back to screenshot mirroring.
+        isMirroring = true
+        isLowLatencyMirroring = true
+    }
+
+    /// Brings up the native screen feed: camera permission, capture session,
+    /// and the first real frame. Returns false when any step fails so the
+    /// caller can fall back to screenshot mirroring.
+    func waitForLowLatencyStartup() async -> Bool {
+        guard isLowLatencyMirroring else { return false }
+
+        guard await Self.ensureCameraPermission() else {
+            errorMessage = "Camera permission is needed for live iPhone mirroring (it covers wired screen capture)."
+            teardownNativeFeed()
+            return false
         }
 
-        startFallbackMirroring(udid: udid, deviceName: deviceName)
+        let feed = IOSNativeScreenFeed()
+        nativeFeed = feed
+        frameRouter.prepare(renderer: displayLayer.sampleBufferRenderer) { [weak self] dimensions in
+            Task { @MainActor [weak self] in
+                guard let self, self.deviceResolution == .zero else { return }
+                self.deviceResolution = dimensions
+            }
+        }
+        feed.onSampleBuffer = { [frameRouter] sampleBuffer in
+            frameRouter.handle(sampleBuffer)
+        }
+        feed.onFailure = { [weak self] message in
+            Task { @MainActor [weak self] in
+                self?.handleNativeFailure(message)
+            }
+        }
+
+        do {
+            _ = try await feed.start(preferredDeviceName: mirroringDeviceName)
+        } catch {
+            errorMessage = error.localizedDescription
+            teardownNativeFeed()
+            return false
+        }
+
+        // The session can run yet deliver nothing (e.g. locked phone right
+        // after trust). Wait for a real frame before declaring success.
+        for _ in 0..<50 {
+            guard isLowLatencyMirroring, nativeFeed === feed else { return false }
+            if frameRouter.hasReceivedFrame {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        errorMessage = "The iPhone screen feed produced no video."
+        teardownNativeFeed()
+        return false
+    }
+
+    private static func ensureCameraPermission() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await AVCaptureDevice.requestAccess(for: .video)
+        default:
+            return false
+        }
     }
 
     func startFallbackMirroring(udid: String, deviceName: String) {
@@ -441,7 +595,6 @@ class IOSDeviceMirror: ObservableObject {
         mirroringDeviceName = deviceName
         mirroringDeviceUDID = udid
         isLowLatencyMirroring = false
-        lowLatencyErrorOutput = ""
 
         // Ensure tunneld is running (needed for iOS 17+). Runs in the
         // background; the frame grabber retries until the tunnel is up.
@@ -455,6 +608,11 @@ class IOSDeviceMirror: ObservableObject {
                 if self.deviceResolution == .zero {
                     self.deviceResolution = image.size
                 }
+                // Record frames as they arrive instead of resampling on a
+                // timer: the file then carries the stream's real cadence.
+                if self.isRecording, let start = self.recordingStartDate {
+                    self.videoRecorder?.append(image, elapsed: Date().timeIntervalSince(start))
+                }
             }
         }
         grabber.start()
@@ -462,25 +620,8 @@ class IOSDeviceMirror: ObservableObject {
         isMirroring = true
     }
 
-    func waitForLowLatencyStartup() async -> Bool {
-        guard isLowLatencyMirroring else { return false }
-
-        try? await Task.sleep(nanoseconds: 900_000_000)
-        guard isLowLatencyMirroring,
-              lowLatencyStreamProcess?.isRunning == true,
-              lowLatencyPlayerProcess?.isRunning == true else {
-            if errorMessage == nil {
-                errorMessage = "iPhone mirror closed before the player window opened."
-            }
-            return false
-        }
-
-        bringLowLatencyMirrorWindowToFront()
-        return true
-    }
-
     func stopMirroring() {
-        stopLowLatencyMirroring()
+        teardownNativeFeed()
 
         frameGrabber?.stop()
         frameGrabber = nil
@@ -497,7 +638,31 @@ class IOSDeviceMirror: ObservableObject {
         deviceResolution = .zero
     }
 
+    private func teardownNativeFeed() {
+        nativeFeed?.onSampleBuffer = nil
+        nativeFeed?.onFailure = nil
+        nativeFeed?.stop()
+        nativeFeed = nil
+        frameRouter.reset()
+        displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
+        isLowLatencyMirroring = false
+    }
+
+    private func handleNativeFailure(_ message: String) {
+        guard nativeFeed != nil else { return }
+
+        if isRecording {
+            cancelRecording()
+        }
+        stopMirroring()
+        errorMessage = message
+        onMirroringEnded?(message)
+    }
+
     func takeScreenshot() -> NSImage? {
+        if isLowLatencyMirroring {
+            return frameRouter.snapshotImage()
+        }
         return currentFrame
     }
 
@@ -505,9 +670,20 @@ class IOSDeviceMirror: ObservableObject {
         guard isMirroring, !isRecording else { return }
         errorMessage = nil
 
-        guard let frame = currentFrame else {
-            errorMessage = "Waiting for the first iPhone frame before recording."
-            return
+        let frameSize: CGSize
+        if isLowLatencyMirroring {
+            let dimensions = frameRouter.frameDimensions
+            guard dimensions != .zero else {
+                errorMessage = "Waiting for the first iPhone frame before recording."
+                return
+            }
+            frameSize = IOSMirrorVideoRecorder.evenSize(dimensions)
+        } else {
+            guard let frame = currentFrame else {
+                errorMessage = "Waiting for the first iPhone frame before recording."
+                return
+            }
+            frameSize = IOSMirrorVideoRecorder.evenFrameSize(for: frame)
         }
 
         let outputDir = MediaLibraryManager.recordingsDirectory
@@ -515,14 +691,17 @@ class IOSDeviceMirror: ObservableObject {
             try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
             let fileName = "iPhone Mirror \(Date().screenRecorderFileName).mp4"
             let outputURL = outputDir.appendingPathComponent(fileName)
-            let frameSize = IOSMirrorVideoRecorder.evenFrameSize(for: frame)
-            videoRecorder = try IOSMirrorVideoRecorder(outputURL: outputURL, frameSize: frameSize)
+            let recorder = try IOSMirrorVideoRecorder(outputURL: outputURL, frameSize: frameSize)
+            videoRecorder = recorder
             isRecording = true
             recordingStartDate = Date()
             recordingDuration = 0
-            videoRecorder?.append(frame, elapsed: 0)
+            if isLowLatencyMirroring {
+                frameRouter.beginRecording(recorder)
+            } else if let frame = currentFrame {
+                recorder.append(frame, elapsed: 0)
+            }
             startDurationTimer()
-            startRecordingFrameTimer()
         } catch {
             videoRecorder = nil
             errorMessage = "Failed to start iPhone recording: \(error.localizedDescription)"
@@ -531,11 +710,10 @@ class IOSDeviceMirror: ObservableObject {
 
     func stopRecording() async -> URL? {
         guard isRecording else { return nil }
-        appendRecordingFrame()
         isRecording = false
-        stopRecordingFrameTimer()
         stopDurationTimer()
 
+        _ = frameRouter.endRecording()
         let outputURL = await videoRecorder?.finish()
         videoRecorder = nil
 
@@ -551,173 +729,10 @@ class IOSDeviceMirror: ObservableObject {
 
     private func cancelRecording() {
         isRecording = false
-        stopRecordingFrameTimer()
         stopDurationTimer()
+        _ = frameRouter.endRecording()
         videoRecorder?.cancel()
         videoRecorder = nil
-    }
-
-    // MARK: - Low-Latency H.264 Player
-
-    private func startLowLatencyMirroring(udid: String, deviceName: String) -> Bool {
-        guard let ffplayPath = Self.ffplayPath else {
-            errorMessage = "ffplay not found. Falling back to screenshot mirroring."
-            return false
-        }
-        guard let pythonPath = Self.pythonPath, let scriptPath = Self.streamScriptPath else {
-            errorMessage = "pymobiledevice3 environment not found. Falling back to screenshot mirroring."
-            return false
-        }
-
-        let pipe = Pipe()
-        let streamErrorPipe = Pipe()
-        let playerErrorPipe = Pipe()
-
-        let streamProcess = Process()
-        streamProcess.executableURL = URL(fileURLWithPath: pythonPath)
-        streamProcess.arguments = [scriptPath, "--h264", udid]
-        streamProcess.standardOutput = pipe
-        streamProcess.standardError = streamErrorPipe
-
-        let playerProcess = Process()
-        playerProcess.executableURL = URL(fileURLWithPath: ffplayPath)
-        playerProcess.arguments = [
-            "-hide_banner",
-            "-loglevel", "warning",
-            "-fflags", "nobuffer",
-            "-flags", "low_delay",
-            "-avioflags", "direct",
-            "-framedrop",
-            "-probesize", "32",
-            "-analyzeduration", "0",
-            "-sync", "ext",
-            "-f", "h264",
-            "-i", "pipe:0",
-            "-window_title", "Captr iOS - \(deviceName)",
-            "-x", "390",
-            "-y", "760"
-        ]
-        playerProcess.standardInput = pipe
-        playerProcess.standardOutput = Pipe()
-        playerProcess.standardError = playerErrorPipe
-
-        streamProcess.terminationHandler = { [weak self, weak streamProcess] _ in
-            let errorOutput = String(
-                data: streamErrorPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
-            Task { @MainActor [weak self, weak streamProcess] in
-                guard let self else { return }
-                if let streamProcess, self.lowLatencyStreamProcess === streamProcess {
-                    self.rememberLowLatencyError(errorOutput)
-                    if self.errorMessage == nil {
-                        self.errorMessage = self.lowLatencyFailureMessage(fallback: "iPhone stream stopped before the mirror window opened.")
-                    }
-                    self.lowLatencyStreamProcess = nil
-                    if self.lowLatencyPlayerProcess?.isRunning == true {
-                        self.lowLatencyPlayerProcess?.terminate()
-                    }
-                    self.finishLowLatencyMirroringIfNeeded()
-                }
-            }
-        }
-
-        playerProcess.terminationHandler = { [weak self, weak playerProcess] _ in
-            let errorOutput = String(
-                data: playerErrorPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
-            Task { @MainActor [weak self, weak playerProcess] in
-                guard let self else { return }
-                if let playerProcess, self.lowLatencyPlayerProcess === playerProcess {
-                    self.rememberLowLatencyError(errorOutput)
-                    if self.errorMessage == nil {
-                        self.errorMessage = self.lowLatencyFailureMessage(fallback: "iPhone player closed before the mirror window opened.")
-                    }
-                    self.lowLatencyPlayerProcess = nil
-                    if self.lowLatencyStreamProcess?.isRunning == true {
-                        self.lowLatencyStreamProcess?.terminate()
-                    }
-                    self.finishLowLatencyMirroringIfNeeded()
-                }
-            }
-        }
-
-        do {
-            try playerProcess.run()
-            try streamProcess.run()
-            lowLatencyPlayerProcess = playerProcess
-            lowLatencyStreamProcess = streamProcess
-            isLowLatencyMirroring = true
-            isMirroring = true
-            bringLowLatencyMirrorWindowToFront()
-            return true
-        } catch {
-            if playerProcess.isRunning {
-                playerProcess.terminate()
-            }
-            if streamProcess.isRunning {
-                streamProcess.terminate()
-            }
-            errorMessage = "Failed to start low-latency iPhone mirror: \(error.localizedDescription)"
-            isLowLatencyMirroring = false
-            isMirroring = false
-            return false
-        }
-    }
-
-    private func rememberLowLatencyError(_ output: String) {
-        let cleaned = output
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .suffix(4)
-            .joined(separator: " ")
-        guard !cleaned.isEmpty else { return }
-        lowLatencyErrorOutput = cleaned
-    }
-
-    private func lowLatencyFailureMessage(fallback: String) -> String {
-        guard !lowLatencyErrorOutput.isEmpty else { return fallback }
-        return "\(fallback) \(lowLatencyErrorOutput)"
-    }
-
-    private func stopLowLatencyMirroring() {
-        let streamProcess = lowLatencyStreamProcess
-        let playerProcess = lowLatencyPlayerProcess
-        lowLatencyStreamProcess = nil
-        lowLatencyPlayerProcess = nil
-
-        if streamProcess?.isRunning == true {
-            streamProcess?.terminate()
-        }
-        if playerProcess?.isRunning == true {
-            playerProcess?.terminate()
-        }
-    }
-
-    private func finishLowLatencyMirroringIfNeeded() {
-        guard lowLatencyStreamProcess == nil || lowLatencyPlayerProcess == nil else { return }
-        isLowLatencyMirroring = false
-        isMirroring = false
-        mirroringDeviceName = ""
-        mirroringDeviceUDID = nil
-    }
-
-    func bringLowLatencyMirrorWindowToFront() {
-        guard let lowLatencyPlayerProcess else { return }
-        bringExternalMirrorWindowToFront(lowLatencyPlayerProcess)
-    }
-
-    private func bringExternalMirrorWindowToFront(_ process: Process) {
-        let processIdentifier = process.processIdentifier
-        Task { @MainActor in
-            for delay in [100_000_000, 300_000_000, 700_000_000, 1_200_000_000] {
-                try? await Task.sleep(nanoseconds: UInt64(delay))
-                NSRunningApplication(processIdentifier: processIdentifier)?
-                    .activate(options: [.activateAllWindows])
-            }
-        }
     }
 
     // MARK: - Tunneld Management
@@ -789,29 +804,5 @@ class IOSDeviceMirror: ObservableObject {
         durationTimer = nil
         recordingDuration = 0
         recordingStartDate = nil
-    }
-
-    private func startRecordingFrameTimer() {
-        stopRecordingFrameTimer()
-        recordingFrameTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.appendRecordingFrame()
-            }
-        }
-    }
-
-    private func stopRecordingFrameTimer() {
-        recordingFrameTimer?.invalidate()
-        recordingFrameTimer = nil
-    }
-
-    private func appendRecordingFrame() {
-        guard isRecording,
-              let frame = currentFrame,
-              let start = recordingStartDate else {
-            return
-        }
-
-        videoRecorder?.append(frame, elapsed: Date().timeIntervalSince(start))
     }
 }

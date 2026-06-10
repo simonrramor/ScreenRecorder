@@ -92,6 +92,13 @@ class AppState: ObservableObject {
         iosMirrorCancellable = iosDeviceMirror.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        iosDeviceMirror.onMirroringEnded = { [weak self] message in
+            guard let self else { return }
+            self.iosMirrorWindow.closeWindow()
+            if let message {
+                self.showErrorNotification(message)
+            }
+        }
         screenParametersCancellable = NotificationCenter.default
             .publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in
@@ -199,9 +206,10 @@ class AppState: ObservableObject {
 
         if iosDeviceMirror.isLowLatencyMirroring {
             if await iosDeviceMirror.waitForLowLatencyStartup() {
+                iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: deviceName, appState: self)
                 return .lowLatency
             }
-            let startupError = iosDeviceMirror.errorMessage ?? "iPhone mirror closed before the player window opened."
+            let startupError = iosDeviceMirror.errorMessage ?? "The live iPhone screen feed failed to start."
             return fallBackToCompatibilityMirror(udid: udid, deviceName: deviceName, startupError: startupError)
         }
 
@@ -241,12 +249,7 @@ class AppState: ObservableObject {
             }
             // If already mirroring, just reopen the window
             if iosDeviceMirror.isMirroring {
-                if iosDeviceMirror.isLowLatencyMirroring {
-                    iosDeviceMirror.bringLowLatencyMirrorWindowToFront()
-                    showSavedNotification("iPhone mirror is already open in low-latency mode")
-                } else {
-                    iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
-                }
+                iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: device.name, appState: self)
                 return
             }
 
@@ -280,7 +283,10 @@ class AppState: ObservableObject {
 
             switch await openIOSMirror(udid: udid, deviceName: device.name) {
             case .lowLatency:
-                showSavedNotification("Use Start Recording and select the iPhone mirror window")
+                iosDeviceMirror.startRecording()
+                if !iosDeviceMirror.isRecording {
+                    showErrorNotification(iosDeviceMirror.errorMessage ?? "Failed to start iPhone recording")
+                }
             case .compatibility:
                 for _ in 0..<20 where iosDeviceMirror.currentFrame == nil {
                     try? await Task.sleep(nanoseconds: 100_000_000)

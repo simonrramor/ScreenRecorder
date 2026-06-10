@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
@@ -9,6 +10,7 @@ class DeviceMirrorWindow {
     private var androidMirror: AndroidDeviceMirror?
     private weak var appState: AppState?
     private var isWindowOpen = false
+    private var frameCancellable: AnyCancellable?
 
     // MARK: - iOS Mirror Window
 
@@ -28,23 +30,44 @@ class DeviceMirrorWindow {
         let controlsHeight: CGFloat = 50
 
         let mirrorRect = NSRect(x: 0, y: controlsHeight, width: windowWidth, height: windowHeight)
-        let imageView = NSImageView(frame: mirrorRect)
-        imageView.imageScaling = .scaleProportionallyUpOrDown
-        imageView.wantsLayer = true
-        imageView.layer?.backgroundColor = NSColor.black.cgColor
-        if #available(macOS 14.0, *) {
-            imageView.layer?.wantsExtendedDynamicRangeContent = false
+        let mirrorView: NSView
+        if mirror.isLowLatencyMirroring {
+            // Native mode: host the mirror's display layer. Frames are
+            // enqueued straight from the capture queue, so the view needs no
+            // per-frame updates from us.
+            let hostView = NSView(frame: mirrorRect)
+            mirror.displayLayer.frame = hostView.bounds
+            hostView.layer = mirror.displayLayer
+            hostView.wantsLayer = true
+            mirrorView = hostView
+        } else {
+            let imageView = NSImageView(frame: mirrorRect)
+            imageView.imageScaling = .scaleProportionallyUpOrDown
+            imageView.wantsLayer = true
+            imageView.layer?.backgroundColor = NSColor.black.cgColor
+            if #available(macOS 14.0, *) {
+                imageView.layer?.wantsExtendedDynamicRangeContent = false
+            }
+            if let frame = mirror.currentFrame {
+                imageView.image = frame
+            }
+            // Repaint when a frame arrives rather than polling on a timer:
+            // polling added up to a frame interval of extra judder.
+            frameCancellable = mirror.$currentFrame.sink { [weak imageView] frame in
+                if let frame {
+                    imageView?.image = frame
+                }
+            }
+            imageViewRef = imageView
+            mirrorView = imageView
         }
-        imageView.autoresizingMask = [.width, .height]
-        if let frame = mirror.currentFrame {
-            imageView.image = frame
-        }
+        mirrorView.autoresizingMask = [.width, .height]
 
         let controlsView = makeControlsView(width: windowWidth, height: controlsHeight, isIOS: true)
 
         let contentHeight = windowHeight + controlsHeight
         let containerView = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: contentHeight))
-        containerView.addSubview(imageView)
+        containerView.addSubview(mirrorView)
         containerView.addSubview(controlsView)
 
         let win = NSWindow(
@@ -61,11 +84,8 @@ class DeviceMirrorWindow {
         win.animationBehavior = .none
 
         window = win
-        imageViewRef = imageView
         isWindowOpen = true
         bringWindowToFront(win)
-
-        startDisplayTimer(iosMirror: mirror, imageView: imageView)
     }
 
     // MARK: - Android Mirror Window
@@ -92,6 +112,11 @@ class DeviceMirrorWindow {
         imageView.autoresizingMask = [.width, .height]
         if let frame = mirror.currentFrame {
             imageView.image = frame
+        }
+        frameCancellable = mirror.$currentFrame.sink { [weak imageView] frame in
+            if let frame {
+                imageView?.image = frame
+            }
         }
 
         let controlsView = makeControlsView(width: windowWidth, height: controlsHeight, isIOS: false)
@@ -123,8 +148,6 @@ class DeviceMirrorWindow {
         imageViewRef = imageView
         isWindowOpen = true
         bringWindowToFront(win)
-
-        startDisplayTimer(androidMirror: mirror, imageView: imageView)
     }
 
     private func bringWindowToFront(_ window: NSWindow) {
@@ -133,45 +156,12 @@ class DeviceMirrorWindow {
         window.orderFrontRegardless()
     }
 
-    // MARK: - Display Timers
-
-    private func startDisplayTimer(iosMirror: IOSDeviceMirror, imageView: NSImageView) {
-        Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self, weak iosMirror, weak imageView] timer in
-            Task { @MainActor in
-                guard let self = self, self.isWindowOpen,
-                      let mirror = iosMirror, let iv = imageView else {
-                    timer.invalidate()
-                    return
-                }
-                // Each delivered frame is a fresh NSImage, so an identity check
-                // skips the redraw when no new frame has arrived.
-                if let frame = mirror.currentFrame, frame !== iv.image {
-                    iv.image = frame
-                }
-            }
-        }
-    }
-
-    private func startDisplayTimer(androidMirror: AndroidDeviceMirror, imageView: NSImageView) {
-        Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self, weak androidMirror, weak imageView] timer in
-            Task { @MainActor in
-                guard let self = self, self.isWindowOpen,
-                      let mirror = androidMirror, let iv = imageView else {
-                    timer.invalidate()
-                    return
-                }
-                if let frame = mirror.currentFrame, frame !== iv.image {
-                    iv.image = frame
-                }
-            }
-        }
-    }
-
     // MARK: - Window Lifecycle
 
     func closeWindow() {
         isWindowOpen = false
         imageViewRef = nil
+        frameCancellable = nil
 
         if let win = window {
             win.contentView = nil
