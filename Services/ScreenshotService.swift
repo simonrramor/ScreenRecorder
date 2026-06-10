@@ -8,6 +8,53 @@ class ScreenshotService: ObservableObject {
     @Published var lastScreenshot: NSImage?
     @Published var errorMessage: String?
 
+    // MARK: - Auto-hidden Dock exclusion
+    //
+    // Area selections end with the cursor parked at a screen edge, which
+    // slides the auto-hidden Dock in *under the selection overlay* right as
+    // the capture fires — so a Dock the user never saw shows up in the shot.
+    // Exclude the Dock bar from display captures while it's set to auto-hide;
+    // a pinned (always-visible) Dock stays in shots like the system tool.
+    // Only the bar itself is excluded (layer kCGDockWindowLevel): the Dock
+    // process also owns the desktop wallpaper windows, which must stay.
+
+    private static var cachedDockBarWindows: [SCWindow] = []
+
+    private static var dockAutoHides: Bool {
+        UserDefaults(suiteName: "com.apple.dock")?.bool(forKey: "autohide") ?? false
+    }
+
+    private static func transientDockExclusion() async -> [SCWindow] {
+        guard dockAutoHides else { return [] }
+
+        if !cachedDockBarWindows.isEmpty {
+            // Serve the cached handles and refresh behind this capture so the
+            // capture itself never waits on window enumeration.
+            Task { await refreshDockBarWindows() }
+            return cachedDockBarWindows
+        }
+        return await refreshDockBarWindows()
+    }
+
+    @discardableResult
+    private static func refreshDockBarWindows() async -> [SCWindow] {
+        // onScreenWindowsOnly must be false: an auto-hidden Dock sits
+        // offscreen at enumeration time, which is exactly when we need it.
+        guard let content = try? await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: false
+        ) else {
+            return cachedDockBarWindows
+        }
+
+        let dockLevel = Int(CGWindowLevelForKey(.dockWindow))
+        cachedDockBarWindows = content.windows.filter { window in
+            window.owningApplication?.bundleIdentifier == "com.apple.dock"
+                && window.windowLayer == dockLevel
+        }
+        return cachedDockBarWindows
+    }
+
     func captureFullScreen(display: SCDisplay?) async -> NSImage? {
         errorMessage = nil
 
@@ -17,7 +64,7 @@ class ScreenshotService: ObservableObject {
         }
 
         do {
-            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let filter = SCContentFilter(display: display, excludingWindows: await Self.transientDockExclusion())
             let config = SCStreamConfiguration()
             let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
             config.width = Int(CGFloat(display.width) * scale)
@@ -92,7 +139,7 @@ class ScreenshotService: ObservableObject {
             throw NSError(domain: "ScreenshotService", code: 1, userInfo: [NSLocalizedDescriptionKey: "No display available"])
         }
 
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let filter = SCContentFilter(display: display, excludingWindows: await transientDockExclusion())
         let config = SCStreamConfiguration()
         let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
         config.width = Int(CGFloat(display.width) * scale)
