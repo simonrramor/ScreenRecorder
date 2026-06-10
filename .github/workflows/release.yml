@@ -67,7 +67,9 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
-    timeout-minutes: 45
+    # Apple's notary queue occasionally stalls for 45+ minutes on a single
+    # submission (it killed the first v1.4.0 run); leave generous headroom.
+    timeout-minutes: 90
 
     env:
       SPARKLE_VERSION: "2.6.0"
