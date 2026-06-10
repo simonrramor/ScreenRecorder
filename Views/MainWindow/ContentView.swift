@@ -179,9 +179,16 @@ struct ContentView: View {
                     Task { await appState.startFirstAvailableIOSMirroring() }
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "iphone")
-                            .font(.system(size: 11))
-                        Text("iOS")
+                        if appState.isStartingIOSMirror {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.7)
+                                .frame(width: 12, height: 12)
+                        } else {
+                            Image(systemName: "iphone")
+                                .font(.system(size: 11))
+                        }
+                        Text(appState.isStartingIOSMirror ? "Connecting…" : "iOS")
                             .font(.system(size: 12, weight: .semibold))
                     }
                     .foregroundColor(.white)
@@ -193,6 +200,7 @@ struct ContentView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .disabled(appState.isStartingIOSMirror)
                 .help("Live stream a connected iPhone or iPad")
 
                 Button {

@@ -131,7 +131,15 @@ class AppState: ObservableObject {
 
     // MARK: - Device Mirroring Actions
 
+    /// Drives the iOS button's spinner: device discovery plus native-feed
+    /// startup can take several seconds.
+    @Published var isStartingIOSMirror = false
+
     func startFirstAvailableIOSMirroring() async {
+        guard !isStartingIOSMirror else { return }
+        isStartingIOSMirror = true
+        defer { isStartingIOSMirror = false }
+
         var device = deviceManager.iosDevices.first
 
         if deviceManager.iosDevices.isEmpty {
