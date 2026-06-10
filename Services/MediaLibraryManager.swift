@@ -28,7 +28,7 @@ class MediaLibraryManager: ObservableObject {
 
     /// Whether a Downloads file is one Captr produced — gates which videos the
     /// library indexes (and may delete) so it never touches unrelated files.
-    static func isRecognizedRecording(fileName: String) -> Bool {
+    nonisolated static func isRecognizedRecording(fileName: String) -> Bool {
         let ext = (fileName as NSString).pathExtension.lowercased()
         guard ["mp4", "mov", "m4v"].contains(ext) else { return false }
         return recordingFileNamePrefixes.contains { fileName.hasPrefix($0) }
