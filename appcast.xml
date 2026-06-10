@@ -6,6 +6,26 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.0</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Smooth iPhone mirroring: live video now comes from macOS's built-in screen-capture engine (the same one QuickTime uses) at the device's full frame rate, replacing the slow screenshot stream</li>
+                    <li>Record directly from the iPhone mirror window — recordings follow the phone's exact frame timing, so scrolling and animations stay smooth</li>
+                    <li>Higher-quality iPhone recordings (12 Mbps at up to 60 fps)</li>
+                    <li>Mirror windows update the moment a frame arrives instead of polling on a timer</li>
+                    <li>Fixed a crash when the iPhone screen feed failed to start</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 10 Jun 2026 09:37:23 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.0/Captr.dmg"
+                       sparkle:version="26"
+                       sparkle:shortVersionString="1.4.0"
+                       sparkle:edSignature="cxiuZy9B8EXDVZSqrrfcWIxwKsIY5W7nkWLQh2UTqFrt9XvkiWid/wrERODuN6xjDvW1P+mYRjX6/vPAsZk9Aw=="
+                       length="2394038"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.3.15</title>
             <description><![CDATA[
                 <ul>
