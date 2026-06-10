@@ -106,7 +106,11 @@ jobs:
         if: env.SKIP_RELEASE == 'false'
         run: |
           set -euo pipefail
-          NOTES=$(git log -1 --format=%b "$GITHUB_SHA" | sed '/^[[:space:]]*$/d')
+          # Strip git trailers (e.g. Co-authored-by:) so they don't leak into
+          # the user-facing release notes; keep only the changelog lines.
+          NOTES=$(git log -1 --format=%b "$GITHUB_SHA" \
+            | { grep -viE '^(co-authored-by|signed-off-by):' || true; } \
+            | sed '/^[[:space:]]*$/d')
           if [ -z "$NOTES" ]; then
             NOTES="New release"
           fi
