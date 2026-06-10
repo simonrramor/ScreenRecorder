@@ -6,6 +6,28 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.3.15</title>
+            <description><![CDATA[
+                <p>- iOS device connection no longer freezes the app while it sets up, and you're asked before any admin-privileges prompt
+- Screenshots and recordings now capture at the correct resolution on every display, including non-retina and mixed-DPI setups
+- Android recording fixes: portrait devices are no longer distorted, long recordings finalize correctly at the device's 3-minute limit, and special characters in forwarded text now work
+- More reliable detection of helper tools (idevice/adb/scrcpy/ffplay) across both Apple Silicon and Intel Homebrew locations
+- Recordings save to your Downloads folder, with separate menu-bar items to open the Recordings and Screenshots folders
+- Deleting a recording or screenshot now moves it to the Trash instead of removing it permanently
+- The media library updates instantly after each capture instead of rescanning and regenerating every thumbnail
+- Microphone capture failures now show a notification instead of failing silently
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com></p>
+            ]]></description>
+            <pubDate>Wed, 10 Jun 2026 07:12:25 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.3.15/Captr.dmg"
+                       sparkle:version="25"
+                       sparkle:shortVersionString="1.3.15"
+                       sparkle:edSignature="sjjHs5H5o9sjrrQIHVvvy41rSI0QxJEX7Lh/UY0Um+v419RJmYmBXFFl+Revey8Z4vRnplFjl4vu3hZucz53Bg=="
+                       length="2370886"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.3.14</title>
             <description><![CDATA[
                 <ul>
