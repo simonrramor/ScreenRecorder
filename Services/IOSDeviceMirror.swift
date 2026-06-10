@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import AVFoundation
 import VideoToolbox
+import os.log
 
 final class IOSMirrorVideoRecorder: @unchecked Sendable {
     private let lock = NSLock()
@@ -522,10 +523,13 @@ class IOSDeviceMirror: ObservableObject {
     /// Brings up the native screen feed: camera permission, capture session,
     /// and the first real frame. Returns false when any step fails so the
     /// caller can fall back to screenshot mirroring.
+    private static let log = Logger(subsystem: "com.captr.app", category: "IOSMirror")
+
     func waitForLowLatencyStartup() async -> Bool {
         guard isLowLatencyMirroring else { return false }
 
         guard await Self.ensureCameraPermission() else {
+            Self.log.error("Native mirror unavailable: camera permission not granted (status \(AVCaptureDevice.authorizationStatus(for: .video).rawValue))")
             errorMessage = "Camera permission is needed for live iPhone mirroring (it covers wired screen capture)."
             teardownNativeFeed()
             return false
@@ -549,8 +553,10 @@ class IOSDeviceMirror: ObservableObject {
         }
 
         do {
-            _ = try await feed.start(preferredDeviceName: mirroringDeviceName)
+            let deviceName = try await feed.start(preferredDeviceName: mirroringDeviceName)
+            Self.log.info("Native mirror capture session started for device: \(deviceName, privacy: .public)")
         } catch {
+            Self.log.error("Native mirror failed to start: \(error.localizedDescription, privacy: .public)")
             errorMessage = error.localizedDescription
             teardownNativeFeed()
             return false
@@ -561,11 +567,13 @@ class IOSDeviceMirror: ObservableObject {
         for _ in 0..<50 {
             guard isLowLatencyMirroring, nativeFeed === feed else { return false }
             if frameRouter.hasReceivedFrame {
+                Self.log.info("Native mirror delivering frames (\(Int(self.frameRouter.frameDimensions.width))x\(Int(self.frameRouter.frameDimensions.height)))")
                 return true
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
 
+        Self.log.error("Native mirror session ran but produced no frames within 5s")
         errorMessage = "The iPhone screen feed produced no video."
         teardownNativeFeed()
         return false
@@ -650,6 +658,7 @@ class IOSDeviceMirror: ObservableObject {
 
     private func handleNativeFailure(_ message: String) {
         guard nativeFeed != nil else { return }
+        Self.log.error("Native mirror stopped mid-session: \(message, privacy: .public)")
 
         if isRecording {
             cancelRecording()

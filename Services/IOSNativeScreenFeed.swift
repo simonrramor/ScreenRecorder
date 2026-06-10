@@ -10,6 +10,7 @@ import Foundation
 final class IOSNativeScreenFeed: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "com.captr.ios-native-feed.session", qos: .userInitiated)
+    private let sessionQueueKey = DispatchSpecificKey<Void>()
     private let sampleQueue = DispatchQueue(label: "com.captr.ios-native-feed.sample", qos: .userInteractive)
     private let stateLock = NSLock()
     private var output: AVCaptureVideoDataOutput?
@@ -27,8 +28,20 @@ final class IOSNativeScreenFeed: NSObject, AVCaptureVideoDataOutputSampleBufferD
         set { stateLock.withLock { _isRunning = newValue } }
     }
 
+    override init() {
+        super.init()
+        sessionQueue.setSpecific(key: sessionQueueKey, value: ())
+    }
+
     deinit {
-        stopSync()
+        // The last reference can die on the session queue itself (stop()'s
+        // teardown block holds self) — a plain sync hop there would deadlock.
+        isRunning = false
+        if DispatchQueue.getSpecific(key: sessionQueueKey) != nil {
+            teardownSession()
+        } else {
+            sessionQueue.sync { self.teardownSession() }
+        }
     }
 
     /// Makes wired iOS screens visible to AVFoundation (off by default).
@@ -71,13 +84,6 @@ final class IOSNativeScreenFeed: NSObject, AVCaptureVideoDataOutputSampleBufferD
     func stop() {
         isRunning = false
         sessionQueue.async {
-            self.teardownSession()
-        }
-    }
-
-    private func stopSync() {
-        isRunning = false
-        sessionQueue.sync {
             self.teardownSession()
         }
     }
