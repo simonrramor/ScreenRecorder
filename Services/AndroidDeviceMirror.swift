@@ -156,6 +156,11 @@ class AndroidDeviceMirror: ObservableObject {
     /// finalize the recording instead of letting the timer run forever.
     var onRecordingAutoStopped: (() -> Void)?
 
+    /// Fires (on the main actor) when scrcpy died right after launch and the
+    /// mirror fell back to the in-app screencap view, so the owner can open
+    /// the mirror window the external player would otherwise have provided.
+    var onScrcpyFellBack: ((String?) -> Void)?
+
     let adbPath: String
     private let scrcpyPath: String?
     private var frameGrabber: AndroidFrameGrabber?
@@ -186,6 +191,12 @@ class AndroidDeviceMirror: ObservableObject {
             }
         }
 
+        startScreencapMirroring(serial: serial)
+    }
+
+    /// In-app screencap mirroring: the fallback when scrcpy is unavailable
+    /// or dies on launch.
+    private func startScreencapMirroring(serial: String) {
         // Fetch device resolution
         Task.detached { [weak self] in
             guard let self = self else { return }
@@ -218,6 +229,7 @@ class AndroidDeviceMirror: ObservableObject {
         // Create input handler
         inputHandler = AndroidInputHandler(adbPath: adbPath, serial: serial)
 
+        isLowLatencyMirroring = false
         isMirroring = true
     }
 
@@ -390,14 +402,45 @@ class AndroidDeviceMirror: ObservableObject {
             "--no-mouse-hover",
             "--always-on-top"
         ]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
 
+        // GUI apps inherit a PATH without Homebrew, and scrcpy shells out to
+        // adb at runtime — without this it dies instantly with "Command not
+        // found: [adb]". scrcpy honors the ADB variable for the full path.
+        var environment = ProcessInfo.processInfo.environment
+        environment["ADB"] = adbPath
+        let adbDirectory = (adbPath as NSString).deletingLastPathComponent
+        environment["PATH"] = "\(adbDirectory):" + (environment["PATH"] ?? "/usr/bin:/bin")
+        process.environment = environment
+
+        process.standardOutput = Pipe()
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+
+        let launchDate = Date()
         process.terminationHandler = { [weak self, weak process] _ in
+            // Read stderr off-main before hopping actors; the pipe drains here.
+            let errorOutput = String(
+                data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
             Task { @MainActor [weak self, weak process] in
-                guard let self else { return }
-                if let process, self.scrcpyProcess === process {
-                    self.scrcpyProcess = nil
+                guard let self, let process, self.scrcpyProcess === process else { return }
+                self.scrcpyProcess = nil
+
+                // scrcpy dying right after launch (bad flags, adb hiccup,
+                // device revoked) shouldn't strand the user with nothing:
+                // switch to the in-app screencap mirror.
+                let diedEarly = Date().timeIntervalSince(launchDate) < 5
+                if diedEarly, self.isMirroring, let serial = self.deviceSerial {
+                    let reason = errorOutput
+                        .components(separatedBy: .newlines)
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                        .suffix(3)
+                        .joined(separator: " ")
+                    self.startScreencapMirroring(serial: serial)
+                    self.onScrcpyFellBack?(reason.isEmpty ? nil : reason)
+                } else {
                     self.isLowLatencyMirroring = false
                     self.isMirroring = false
                     self.mirroringDeviceName = ""

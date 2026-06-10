@@ -123,6 +123,15 @@ class AppState: ObservableObject {
                 }
             }
         }
+        mirror.onScrcpyFellBack = { [weak self] reason in
+            guard let self, let mirror = self.androidDeviceMirror else { return }
+            self.androidMirrorWindow.openAndroidMirrorWindow(mirror: mirror, appState: self)
+            if let reason {
+                self.showErrorNotification("scrcpy failed (\(reason)) — using compatibility mirroring")
+            } else {
+                self.showSavedNotification("Android mirror running in compatibility mode")
+            }
+        }
         androidMirrorCancellable = mirror.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
