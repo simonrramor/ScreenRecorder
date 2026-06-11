@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.3</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Capture shortcuts no longer bring the Captr window to the front or steal focus from the app you're working in — the selection overlay now behaves like the system screenshot tool</li>
+                </ul>
+            ]]></description>
+            <pubDate>Thu, 11 Jun 2026 07:42:38 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.3/Captr.dmg"
+                       sparkle:version="29"
+                       sparkle:shortVersionString="1.4.3"
+                       sparkle:edSignature="7nshA3C7JC5b7f2+gAn5J+hcHkCuB88soy9hdqBv/0mT6Eyub5BSPspP1aLvhlCjQ3RH02NCmghF+oYVoPnRBg=="
+                       length="2411601"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.2</title>
             <description><![CDATA[
                 <ul>
