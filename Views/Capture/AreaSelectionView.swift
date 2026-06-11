@@ -162,6 +162,16 @@ class AreaSelectionNSView: NSView {
         return true
     }
 
+    // The overlay panel is key without the app being active, so Escape must
+    // be handled here rather than relying on app-level key routing.
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {
+            onCancelled?()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
     override func cursorUpdate(with event: NSEvent) {
         NSCursor.crosshair.set()
     }
@@ -249,8 +259,10 @@ class AreaSelectionWindowController {
             windows.append(window)
         }
 
-        NSApp.activate(ignoringOtherApps: true)
-
+        // No NSApp.activate here: the overlays are non-activating key panels
+        // (Spotlight-style), so they take keyboard input on their own.
+        // Activating the app would also drag its regular windows (the main
+        // window) in front of whatever the user is capturing.
         if let firstWindow = windows.first {
             firstWindow.makeKeyAndOrderFront(nil)
             if let view = firstWindow.contentView as? AreaSelectionNSView {
@@ -470,6 +482,14 @@ class WindowSelectionNSView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {
+            onCancelled?()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
 }
 
 // MARK: - Window Selection Window Controller
@@ -538,8 +558,8 @@ class WindowSelectionWindowController {
             panels.append(panel)
         }
 
-        NSApp.activate(ignoringOtherApps: true)
-
+        // Non-activating key panels take keyboard input without activating
+        // the app (which would raise the main window over the capture target).
         if let first = panels.first {
             first.makeKeyAndOrderFront(nil)
             if let view = first.contentView as? WindowSelectionNSView {
