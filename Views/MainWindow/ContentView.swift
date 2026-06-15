@@ -326,6 +326,21 @@ struct SettingsPopup: View {
                     }
                 }
 
+                Section("Device Mirroring") {
+                    Toggle(isOn: Binding(
+                        get: { appState.useFastIOSMirroring },
+                        set: { appState.setFastIOSMirroring($0) }
+                    )) {
+                        Label("Fast iOS Mirror", systemImage: "bolt.fill")
+                    }
+
+                    Text(appState.useFastIOSMirroring
+                        ? "Lower latency using macOS native iPhone capture. Switch off if it crashes after wake or disconnect."
+                        : "Stable mode avoids the macOS iPhone capture crash, but updates more slowly.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Shortcuts") {
                     ForEach(ShortcutAction.allCases) { action in
                         ShortcutRow(

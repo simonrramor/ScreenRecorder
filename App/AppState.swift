@@ -8,6 +8,12 @@ import Translation
 
 @MainActor
 class AppState: ObservableObject {
+    private enum Defaults {
+        static let useFastIOSMirroring = "useFastIOSMirroring"
+    }
+
+    private let userDefaults: UserDefaults
+
     @Published var captureEngine = CaptureEngine()
     @Published var screenshotService = ScreenshotService()
     @Published var textCaptureService = TextCaptureService()
@@ -42,6 +48,11 @@ class AppState: ObservableObject {
     @Published var notificationIsError: Bool = false
     @Published var isRecordingShortcut: Bool = false
     @Published var showSettingsPopover: Bool = false
+    @Published var useFastIOSMirroring: Bool {
+        didSet {
+            userDefaults.set(useFastIOSMirroring, forKey: Defaults.useFastIOSMirroring)
+        }
+    }
     private var notificationDismissTask: Task<Void, Never>?
 
     private let areaSelectionController = AreaSelectionWindowController()
@@ -51,6 +62,28 @@ class AppState: ObservableObject {
     let translationOverlayController = TranslationOverlayController()
     lazy var translationService = TranslationService(settings: translationSettings)
     var keyboardShortcutManager: KeyboardShortcutManager?
+
+    init(
+        userDefaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        self.userDefaults = userDefaults
+
+        if let storedPreference = userDefaults.object(forKey: Defaults.useFastIOSMirroring) as? Bool {
+            self.useFastIOSMirroring = storedPreference
+        } else {
+            self.useFastIOSMirroring = IOSDeviceMirror.nativeLowLatencyMirroringEnabled(environment: environment)
+        }
+    }
+
+    func setFastIOSMirroring(_ enabled: Bool) {
+        guard useFastIOSMirroring != enabled else { return }
+        useFastIOSMirroring = enabled
+
+        if iosDeviceMirror.isMirroring {
+            showSavedNotification("Restart iPhone mirror to apply \(enabled ? "Fast" : "Stable") mode")
+        }
+    }
 
     func unregisterShortcutsTemporarily() {
         keyboardShortcutManager?.unregisterShortcuts()
@@ -218,7 +251,7 @@ class AppState: ObservableObject {
             return iosDeviceMirror.isLowLatencyMirroring ? .lowLatency : .compatibility
         }
 
-        guard IOSDeviceMirror.nativeLowLatencyMirroringEnabled() else {
+        guard useFastIOSMirroring else {
             return openCompatibilityIOSMirror(udid: udid, deviceName: deviceName)
         }
 
@@ -293,9 +326,9 @@ class AppState: ObservableObject {
 
             switch await openIOSMirror(udid: udid, deviceName: device.name) {
             case .lowLatency:
-                showSavedNotification("iPhone mirror opened in low-latency mode")
+                showSavedNotification("iPhone mirror opened in Fast mode")
             case .compatibility:
-                showSavedNotification("Opened iPhone mirror in compatibility mode")
+                showSavedNotification("iPhone mirror opened in Stable mode")
             case nil:
                 break
             }

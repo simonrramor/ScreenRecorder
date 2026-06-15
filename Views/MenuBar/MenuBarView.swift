@@ -215,6 +215,16 @@ struct MenuBarView: View {
             }
             .toggleStyle(.checkbox)
             .padding(.horizontal, 4)
+
+            Toggle(isOn: Binding(
+                get: { appState.useFastIOSMirroring },
+                set: { appState.setFastIOSMirroring($0) }
+            )) {
+                Label("Fast iOS Mirror", systemImage: "bolt.fill")
+                    .font(.system(size: 13))
+            }
+            .toggleStyle(.checkbox)
+            .padding(.horizontal, 4)
         }
     }
 
