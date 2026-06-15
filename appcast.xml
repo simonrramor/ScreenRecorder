@@ -6,6 +6,24 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.5</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Add a Fast iOS Mirror toggle in settings and the menu bar.</li>
+                    <li>Persist the iOS mirror mode and use Stable mode by default unless Fast is selected.</li>
+                    <li>Add regression coverage for the persisted iOS mirror mode.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Mon, 15 Jun 2026 09:22:40 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.5/Captr.dmg"
+                       sparkle:version="31"
+                       sparkle:shortVersionString="1.4.5"
+                       sparkle:edSignature="riMBGrWl8+xPIPaKCD9opC4/CUnjbq9xXSaLL5N5iZ/VIc34cG5CsHeFFyZFexH/EXPiDCIcLF30lK0HXi2SBQ=="
+                       length="2419848"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.4</title>
             <description><![CDATA[
                 <ul>
