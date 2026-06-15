@@ -203,7 +203,7 @@ class AppState: ObservableObject {
     }
 
     /// How an iOS mirror ended up on screen after running the transport
-    /// ladder (low-latency H.264 player → screenshot compatibility).
+    /// ladder (safe screenshot streaming → opt-in native low latency).
     private enum IOSMirrorMode {
         case lowLatency
         case compatibility
@@ -213,6 +213,19 @@ class AppState: ObservableObject {
     /// mirror-with-recording. Returns the mode that ended up active, or nil
     /// when everything failed (an error notification was already shown).
     private func openIOSMirror(udid: String, deviceName: String) async -> IOSMirrorMode? {
+        if iosDeviceMirror.isMirroring {
+            iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: deviceName, appState: self)
+            return iosDeviceMirror.isLowLatencyMirroring ? .lowLatency : .compatibility
+        }
+
+        guard IOSDeviceMirror.nativeLowLatencyMirroringEnabled() else {
+            return openCompatibilityIOSMirror(udid: udid, deviceName: deviceName)
+        }
+
+        return await openNativeIOSMirror(udid: udid, deviceName: deviceName)
+    }
+
+    private func openNativeIOSMirror(udid: String, deviceName: String) async -> IOSMirrorMode? {
         if !iosDeviceMirror.isMirroring {
             iosDeviceMirror.startMirroring(udid: udid, deviceName: deviceName)
         }
@@ -235,9 +248,17 @@ class AppState: ObservableObject {
     }
 
     private func fallBackToCompatibilityMirror(udid: String, deviceName: String, startupError: String) -> IOSMirrorMode? {
+        let compatibilityMode = openCompatibilityIOSMirror(udid: udid, deviceName: deviceName)
+        if compatibilityMode == nil {
+            showErrorNotification(startupError)
+        }
+        return compatibilityMode
+    }
+
+    private func openCompatibilityIOSMirror(udid: String, deviceName: String) -> IOSMirrorMode? {
         iosDeviceMirror.startFallbackMirroring(udid: udid, deviceName: deviceName)
         guard iosDeviceMirror.isMirroring else {
-            showErrorNotification(startupError)
+            showErrorNotification(iosDeviceMirror.errorMessage ?? "Failed to start iOS mirroring")
             return nil
         }
         iosMirrorWindow.openIOSMirrorWindow(mirror: iosDeviceMirror, deviceName: deviceName, appState: self)

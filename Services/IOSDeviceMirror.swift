@@ -507,6 +507,14 @@ class IOSDeviceMirror: ObservableObject {
         Bundle.main.path(forResource: "ios_stream", ofType: "py")
     }
 
+    /// The native CoreMediaIO iOS screen-capture path is low latency, but
+    /// Apple's iOSScreenCapture plugin has produced wake/disconnect crashes
+    /// on macOS 26. Keep it out of production unless explicitly enabled for
+    /// local testing.
+    nonisolated static func nativeLowLatencyMirroringEnabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        environment["CAPTR_ENABLE_NATIVE_IOS_MIRROR"] == "1"
+    }
+
     func startMirroring(udid: String, deviceName: String) {
         guard !isMirroring else { return }
         errorMessage = nil

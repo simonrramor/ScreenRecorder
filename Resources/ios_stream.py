@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Persistent iOS screen streaming helper (compatibility mode).
+Persistent iOS screen streaming helper.
 
 Streams pymobiledevice3 screenshots:
     [4 bytes big-endian length][PNG data] repeated
 
-Live mirroring uses macOS's native iOS screen-capture device instead;
-this script is only the fallback when that path is unavailable.
+This is the default production iOS mirror transport. The native CoreMediaIO
+iOS screen-capture path is intentionally kept behind a local developer flag
+because Apple's iOSScreenCapture plugin has crashed on macOS 26.
 """
 
 import sys
