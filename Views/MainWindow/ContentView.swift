@@ -174,6 +174,8 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
 
+            iosMirrorModeControl
+
             HStack(spacing: 6) {
                 Button {
                     Task { await appState.startFirstAvailableIOSMirroring() }
@@ -258,6 +260,58 @@ struct ContentView: View {
         }
     }
 
+    private var iosMirrorModeControl: some View {
+        HStack(spacing: 2) {
+            iosMirrorModeButton(
+                title: "Stable",
+                isSelected: !appState.useFastIOSMirroring,
+                help: "Use stable iOS mirroring. Slower, but avoids the macOS native capture crash."
+            ) {
+                appState.setFastIOSMirroring(false)
+            }
+
+            iosMirrorModeButton(
+                title: "Fast",
+                isSelected: appState.useFastIOSMirroring,
+                help: "Use fast iOS mirroring. Lower latency, but may be less stable on some macOS/iPhone states."
+            ) {
+                appState.setFastIOSMirroring(true)
+            }
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 9)
+                .fill(Color(nsColor: NSColor(white: 0.16, alpha: 1.0)))
+        )
+        .help("iOS mirror mode")
+    }
+
+    private func iosMirrorModeButton(
+        title: String,
+        isSelected: Bool,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                action()
+            }
+        } label: {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(isSelected ? .white : .secondary)
+                .frame(width: 50)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(isSelected ? Color(nsColor: NSColor(white: 0.30, alpha: 1.0)) : .clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
     private func formatDuration(_ duration: TimeInterval) -> String {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
@@ -327,12 +381,16 @@ struct SettingsPopup: View {
                 }
 
                 Section("Device Mirroring") {
-                    Toggle(isOn: Binding(
+                    Picker(selection: Binding(
                         get: { appState.useFastIOSMirroring },
                         set: { appState.setFastIOSMirroring($0) }
                     )) {
-                        Label("Fast iOS Mirror", systemImage: "bolt.fill")
+                        Text("Stable").tag(false)
+                        Text("Fast").tag(true)
+                    } label: {
+                        Label("iOS Mirror Mode", systemImage: "iphone")
                     }
+                    .pickerStyle(.segmented)
 
                     Text(appState.useFastIOSMirroring
                         ? "Lower latency using macOS native iPhone capture. Switch off if it crashes after wake or disconnect."
