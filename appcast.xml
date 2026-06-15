@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.4</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Default iPhone mirroring to the safer screenshot stream to avoid macOS iOSScreenCapture crashes after wake.\n- Keep the native low-latency iPhone mirror path behind an explicit developer opt-in flag.\n- Add regression coverage for the iPhone mirror transport policy.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Mon, 15 Jun 2026 07:59:13 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.4/Captr.dmg"
+                       sparkle:version="30"
+                       sparkle:shortVersionString="1.4.4"
+                       sparkle:edSignature="hTKKZVj5cwa+UzmXJSoEOmViYC5Aa+DQKzQZhPLm/u0F36/jirZL3yMbGGBPPa6Up/feVL8PZuchUFOwCpEEDQ=="
+                       length="2416167"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.3</title>
             <description><![CDATA[
                 <ul>
