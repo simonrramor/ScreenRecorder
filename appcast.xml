@@ -6,6 +6,23 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.6</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Add a visible Stable/Fast iOS mirror selector to the capture toolbar.</li>
+                    <li>Replace the hidden-feeling Fast iOS checkbox with clear Stable/Fast controls in settings and the menu bar.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Mon, 15 Jun 2026 09:37:15 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.6/Captr.dmg"
+                       sparkle:version="32"
+                       sparkle:shortVersionString="1.4.6"
+                       sparkle:edSignature="cKFi6YHjgL/ZHY32vRgQ1j+ntxAO7fopsTs6w75ypEpSwqP6c3WFWMSwQURQY2xsOuJOETVHj9CPTHdcm5M6BA=="
+                       length="2438854"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.5</title>
             <description><![CDATA[
                 <ul>
