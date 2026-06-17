@@ -99,7 +99,8 @@ final class IOSMirrorVideoRecorder: @unchecked Sendable {
     /// Clamps timestamps to be strictly increasing (AVAssetWriter rejects
     /// non-monotonic appends) while staying on the capture clock otherwise.
     static func nextPresentationTime(elapsed: TimeInterval, after last: CMTime?) -> CMTime {
-        var presentationTime = CMTime(seconds: max(elapsed, 0), preferredTimescale: 600)
+        let safeElapsed = elapsed.isFinite ? max(elapsed, 0) : 0
+        var presentationTime = CMTime(seconds: safeElapsed, preferredTimescale: 600)
         if let last, CMTimeCompare(presentationTime, last) <= 0 {
             presentationTime = CMTimeAdd(last, CMTime(value: 1, timescale: 600))
         }

@@ -16,6 +16,14 @@ final class IOSMirrorRecorderTimingTests: XCTestCase {
         XCTAssertEqual(time.seconds, 0, accuracy: 0.001)
     }
 
+    func testNonFiniteElapsedClampsToZero() {
+        let nanTime = IOSMirrorVideoRecorder.nextPresentationTime(elapsed: .nan, after: nil)
+        XCTAssertEqual(nanTime.seconds, 0, accuracy: 0.001)
+
+        let infinityTime = IOSMirrorVideoRecorder.nextPresentationTime(elapsed: .infinity, after: nil)
+        XCTAssertEqual(infinityTime.seconds, 0, accuracy: 0.001)
+    }
+
     // MARK: - Timestamps never go backwards (AVAssetWriter rejects that)
 
     func testEqualTimestampIsNudgedForward() {

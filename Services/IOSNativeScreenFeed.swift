@@ -232,6 +232,7 @@ final class IOSMirrorFrameRouter: @unchecked Sendable {
     private var latestPixelBuffer: CVPixelBuffer?
     private var recorder: IOSMirrorVideoRecorder?
     private var recordingBasePTS: Double?
+    private var recordingBaseHostTime: TimeInterval?
     private var _frameDimensions: CGSize = .zero
     private var firstFrameCallback: ((CGSize) -> Void)?
     private let ciContext = CIContext()
@@ -251,6 +252,7 @@ final class IOSMirrorFrameRouter: @unchecked Sendable {
             self.latestPixelBuffer = nil
             self.recorder = nil
             self.recordingBasePTS = nil
+            self.recordingBaseHostTime = nil
             self._frameDimensions = .zero
             self.firstFrameCallback = onFirstFrame
         }
@@ -263,6 +265,7 @@ final class IOSMirrorFrameRouter: @unchecked Sendable {
             self.latestPixelBuffer = nil
             self.recorder = nil
             self.recordingBasePTS = nil
+            self.recordingBaseHostTime = nil
             self._frameDimensions = .zero
             self.firstFrameCallback = nil
             return r
@@ -274,6 +277,7 @@ final class IOSMirrorFrameRouter: @unchecked Sendable {
         lock.withLock {
             self.recorder = recorder
             self.recordingBasePTS = nil
+            self.recordingBaseHostTime = nil
         }
     }
 
@@ -282,6 +286,7 @@ final class IOSMirrorFrameRouter: @unchecked Sendable {
             let r = recorder
             recorder = nil
             recordingBasePTS = nil
+            recordingBaseHostTime = nil
             return r
         }
     }
@@ -291,7 +296,10 @@ final class IOSMirrorFrameRouter: @unchecked Sendable {
 
         var firstFrame: ((CGSize) -> Void)?
         var dimensions: CGSize = .zero
-        let (renderer, recorder, basePTS): (AVSampleBufferVideoRenderer?, IOSMirrorVideoRecorder?, Double?) = lock.withLock {
+        let samplePTS = Self.validPresentationSeconds(from: sampleBuffer)
+        let hostTime = ProcessInfo.processInfo.systemUptime
+
+        let (renderer, recorder, elapsed): (AVSampleBufferVideoRenderer?, IOSMirrorVideoRecorder?, TimeInterval?) = lock.withLock {
             latestPixelBuffer = pixelBuffer
             if _frameDimensions == .zero {
                 _frameDimensions = CGSize(
@@ -302,11 +310,25 @@ final class IOSMirrorFrameRouter: @unchecked Sendable {
                 firstFrame = firstFrameCallback
                 firstFrameCallback = nil
             }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
-            if self.recorder != nil && recordingBasePTS == nil {
-                recordingBasePTS = pts
+
+            var elapsed: TimeInterval?
+            if self.recorder != nil {
+                if recordingBasePTS == nil, let samplePTS {
+                    recordingBasePTS = samplePTS
+                }
+                if recordingBaseHostTime == nil {
+                    recordingBaseHostTime = hostTime
+                }
+
+                if let samplePTS, let recordingBasePTS {
+                    elapsed = max(0, samplePTS - recordingBasePTS)
+                } else if let recordingBaseHostTime {
+                    elapsed = max(0, hostTime - recordingBaseHostTime)
+                } else {
+                    elapsed = 0
+                }
             }
-            return (self.renderer, self.recorder, recordingBasePTS)
+            return (self.renderer, self.recorder, elapsed)
         }
 
         firstFrame?(dimensions)
@@ -324,9 +346,8 @@ final class IOSMirrorFrameRouter: @unchecked Sendable {
             }
         }
 
-        if let recorder, let basePTS {
-            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
-            recorder.append(pixelBuffer, elapsed: max(0, pts - basePTS))
+        if let recorder, let elapsed {
+            recorder.append(pixelBuffer, elapsed: elapsed)
         }
     }
 
@@ -350,5 +371,18 @@ final class IOSMirrorFrameRouter: @unchecked Sendable {
             Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
             Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
         )
+    }
+
+    private static func validPresentationSeconds(from sampleBuffer: CMSampleBuffer) -> Double? {
+        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard time.isValid,
+              !time.isIndefinite,
+              !time.isPositiveInfinity,
+              !time.isNegativeInfinity else {
+            return nil
+        }
+
+        let seconds = time.seconds
+        return seconds.isFinite ? seconds : nil
     }
 }
