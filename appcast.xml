@@ -6,6 +6,23 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.8</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fix fast iOS recording crash when capture timestamps are invalid</li>
+                    <li>Fall back to monotonic host timing for native iPhone recording frames</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 17 Jun 2026 12:13:12 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.8/Captr.dmg"
+                       sparkle:version="34"
+                       sparkle:shortVersionString="1.4.8"
+                       sparkle:edSignature="bEmvYmfWPbLu+9tDH0IUXYHP3SGrSWm/dAo0FzREpFOefmlAtKy+YPtOXfQTap3unfEaKGDBHIulXtLVp3BYDw=="
+                       length="2440363"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.7</title>
             <description><![CDATA[
                 <ul>
