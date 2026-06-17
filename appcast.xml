@@ -6,6 +6,23 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.7</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Reuse the existing device mirror window when the iOS button is pressed while mirroring or recording is already active.</li>
+                    <li>Avoid tearing down and rebuilding the active mirror window, which could crash during an active iPhone stream recording.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 17 Jun 2026 09:13:03 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.7/Captr.dmg"
+                       sparkle:version="33"
+                       sparkle:shortVersionString="1.4.7"
+                       sparkle:edSignature="JnPSn1Pk1LScJ0OAmG2sAJulrNxLtWU47mLoiF/v73rLTQrTjRTYwgOxn0j297lYaK4NB4lAGV9dmi0Hjv1cDw=="
+                       length="2439372"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.6</title>
             <description><![CDATA[
                 <ul>
