@@ -38,11 +38,7 @@ struct DeviceMirrorView: View {
         if device.platform == .iOS {
             appState.iosMirrorWindow.openIOSMirrorWindow(mirror: appState.iosDeviceMirror, deviceName: device.name, appState: appState)
         } else if device.platform == .android, let mirror = appState.androidDeviceMirror {
-            if mirror.isLowLatencyMirroring {
-                appState.showSavedNotification("Android mirror is already open in low-latency mode")
-            } else {
-                appState.androidMirrorWindow.openAndroidMirrorWindow(mirror: mirror, appState: appState)
-            }
+            appState.androidMirrorWindow.openAndroidMirrorWindow(mirror: mirror, appState: appState)
         }
     }
 

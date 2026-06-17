@@ -15,7 +15,6 @@ enum ToolLocator {
         find("adb", extraPaths: ["\(NSHomeDirectory())/Library/Android/sdk/platform-tools/adb"])
     }
 
-    static var scrcpy: String? { find("scrcpy") }
     static var brew: String? { find("brew") }
     static var ideviceId: String? { find("idevice_id") }
     static var ideviceInfo: String? { find("ideviceinfo") }

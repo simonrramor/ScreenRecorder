@@ -35,7 +35,6 @@ struct ConnectedDevice: Identifiable, Hashable {
 class DeviceManager: ObservableObject {
     @Published var devices: [ConnectedDevice] = []
     @Published var adbPath: String?
-    @Published var scrcpyPath: String?
     @Published var isInstalling = false
     @Published var statusMessage: String?
 
@@ -47,7 +46,6 @@ class DeviceManager: ObservableObject {
     private var iosDeviceNameCache: [String: String] = [:]
 
     var adbAvailable: Bool { adbPath != nil }
-    var scrcpyAvailable: Bool { scrcpyPath != nil }
     var iosDevices: [ConnectedDevice] { devices.filter { $0.platform == .iOS } }
     var androidDevices: [ConnectedDevice] { devices.filter { $0.platform == .android } }
 
@@ -82,7 +80,6 @@ class DeviceManager: ObservableObject {
 
     func findTools() {
         adbPath = ToolLocator.adb
-        scrcpyPath = ToolLocator.scrcpy
     }
 
     func scanIOSDevices() {
@@ -237,13 +234,13 @@ class DeviceManager: ObservableObject {
         }
 
         isInstalling = true
-        statusMessage = "Installing scrcpy & ADB via Homebrew... This may take a few minutes."
+        statusMessage = "Installing ADB via Homebrew... This may take a few minutes."
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: brewPath)
-                process.arguments = ["install", "scrcpy"]
+                process.arguments = ["install", "android-platform-tools"]
                 process.standardOutput = Pipe()
                 process.standardError = Pipe()
                 try? process.run()
@@ -255,13 +252,11 @@ class DeviceManager: ObservableObject {
         findTools()
         isInstalling = false
 
-        if scrcpyAvailable && adbAvailable {
+        if adbAvailable {
             statusMessage = "Installed successfully! Connect an Android device to get started."
             startMonitoring()
-        } else if adbAvailable {
-            statusMessage = "ADB installed but scrcpy failed. Try: brew install scrcpy"
         } else {
-            statusMessage = "Installation failed. Try running: brew install scrcpy"
+            statusMessage = "Installation failed. Try running: brew install android-platform-tools"
         }
     }
 

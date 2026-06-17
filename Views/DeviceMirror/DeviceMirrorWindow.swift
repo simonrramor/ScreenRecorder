@@ -231,11 +231,11 @@ class DeviceMirrorWindow {
         controlsView.addSubview(recordBtn)
         lowerXOffset += 95
 
-        let ssBtn = makeButton(title: "Screenshot", x: lowerXOffset, y: 8, color: .systemBlue)
-        ssBtn.target = self
-        ssBtn.action = #selector(screenshotTapped(_:))
-        controlsView.addSubview(ssBtn)
-        lowerXOffset += 105
+        let copyBtn = makeButton(title: "Copy", x: lowerXOffset, y: 8, color: .systemBlue)
+        copyBtn.target = self
+        copyBtn.action = #selector(copyTapped(_:))
+        controlsView.addSubview(copyBtn)
+        lowerXOffset += 95
 
         let disconnectBtn = makeButton(title: "Disconnect", x: lowerXOffset, y: 8, color: .systemGray)
         disconnectBtn.target = self
@@ -292,7 +292,7 @@ class DeviceMirrorWindow {
         }
     }
 
-    @objc private func screenshotTapped(_ sender: NSButton) {
+    @objc private func copyTapped(_ sender: NSButton) {
         var image: NSImage?
         if let mirror = iosMirror {
             image = mirror.takeScreenshot()
@@ -301,7 +301,7 @@ class DeviceMirrorWindow {
         }
         if let image = image {
             ClipboardService.copyImage(image)
-            appState?.showSavedNotification("Screenshot copied to clipboard")
+            appState?.showSavedNotification("Mirror frame copied to clipboard")
         } else {
             appState?.showError("No frame available yet — wait for the mirror to start, then try again")
         }

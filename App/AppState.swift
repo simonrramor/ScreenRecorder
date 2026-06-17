@@ -144,7 +144,7 @@ class AppState: ObservableObject {
     private func setupAndroidMirror() {
         guard let adb = deviceManager.adbPath else { return }
 
-        let mirror = AndroidDeviceMirror(adbPath: adb, scrcpyPath: deviceManager.scrcpyPath)
+        let mirror = AndroidDeviceMirror(adbPath: adb)
         mirror.onRecordingAutoStopped = { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, let mirror = self.androidDeviceMirror else { return }
@@ -154,15 +154,6 @@ class AppState: ObservableObject {
                 } else {
                     self.showErrorNotification(mirror.errorMessage ?? "Android recording stopped unexpectedly")
                 }
-            }
-        }
-        mirror.onScrcpyFellBack = { [weak self] reason in
-            guard let self, let mirror = self.androidDeviceMirror else { return }
-            self.androidMirrorWindow.openAndroidMirrorWindow(mirror: mirror, appState: self)
-            if let reason {
-                self.showErrorNotification("scrcpy failed (\(reason)) — using compatibility mirroring")
-            } else {
-                self.showSavedNotification("Android mirror running in compatibility mode")
             }
         }
         androidMirrorCancellable = mirror.objectWillChange.sink { [weak self] _ in
@@ -336,11 +327,7 @@ class AppState: ObservableObject {
         case .android:
             guard let mirror = preparedAndroidMirror() else { return }
             mirror.startMirroring(device: device)
-            if mirror.isLowLatencyMirroring {
-                showSavedNotification("Android mirror opened in low-latency mode")
-            } else {
-                androidMirrorWindow.openAndroidMirrorWindow(mirror: mirror, appState: self)
-            }
+            androidMirrorWindow.openAndroidMirrorWindow(mirror: mirror, appState: self)
         }
     }
 
@@ -373,10 +360,6 @@ class AppState: ObservableObject {
         case .android:
             guard let mirror = preparedAndroidMirror() else { return }
             mirror.startMirroring(device: device)
-            if mirror.isLowLatencyMirroring {
-                showSavedNotification("Use Start Recording and select the Android mirror window")
-                return
-            }
             Task {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 mirror.startRecording()
