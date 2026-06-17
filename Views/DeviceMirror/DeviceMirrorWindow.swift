@@ -15,7 +15,13 @@ class DeviceMirrorWindow {
     // MARK: - iOS Mirror Window
 
     func openIOSMirrorWindow(mirror: IOSDeviceMirror, deviceName: String, appState: AppState) {
-        // Only close our own window if already open
+        if let existingWindow = openWindow {
+            self.iosMirror = mirror
+            self.appState = appState
+            existingWindow.title = "Mirror - \(deviceName)"
+            bringWindowToFront(existingWindow)
+            return
+        }
         if isWindowOpen {
             closeWindow()
         }
@@ -91,7 +97,13 @@ class DeviceMirrorWindow {
     // MARK: - Android Mirror Window
 
     func openAndroidMirrorWindow(mirror: AndroidDeviceMirror, appState: AppState) {
-        // Only close our own window if already open
+        if let existingWindow = openWindow {
+            self.androidMirror = mirror
+            self.appState = appState
+            existingWindow.title = "Mirror - \(mirror.mirroringDeviceName)"
+            bringWindowToFront(existingWindow)
+            return
+        }
         if isWindowOpen {
             closeWindow()
         }
@@ -157,6 +169,11 @@ class DeviceMirrorWindow {
     }
 
     // MARK: - Window Lifecycle
+
+    private var openWindow: NSWindow? {
+        guard let window, isWindowOpen, window.isVisible else { return nil }
+        return window
+    }
 
     func closeWindow() {
         isWindowOpen = false
