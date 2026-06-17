@@ -6,6 +6,24 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.9</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Keep Android mirroring inside Captr with ADB-only capture</li>
+                    <li>Remove the external scrcpy mirror dependency from setup</li>
+                    <li>Rename the mirror Screenshot button to Copy</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 17 Jun 2026 12:28:16 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.9/Captr.dmg"
+                       sparkle:version="35"
+                       sparkle:shortVersionString="1.4.9"
+                       sparkle:edSignature="xjlNCeoOgwLBJ/yYXPCP5eYmQjyTsFchETIYHRLB3RB6oiq8OeYHSxlQq/fglX/z4rwzV0LHT6GeO9TnMmQ7AA=="
+                       length="2421956"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.8</title>
             <description><![CDATA[
                 <ul>
