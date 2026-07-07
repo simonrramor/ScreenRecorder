@@ -702,6 +702,18 @@ class RecordingAreaOverlayController {
             window.close()
         }
     }
+
+    /// Temporarily hides the recording border/dimming so a screenshot taken
+    /// mid-recording doesn't capture it. CATransaction.flush makes the
+    /// change visible to WindowServer before the capture reads the screen.
+    func setHiddenForCapture(_ hidden: Bool) {
+        for window in windows {
+            window.alphaValue = hidden ? 0 : 1
+        }
+        if hidden {
+            CATransaction.flush()
+        }
+    }
 }
 
 // MARK: - Overlay Window

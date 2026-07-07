@@ -16,11 +16,13 @@ struct MenuBarView: View {
                 recordingActiveSection
             } else {
                 recordingSection
-                Divider().padding(.vertical, 4)
-                screenshotSection
-                Divider().padding(.vertical, 4)
-                textCaptureSection
             }
+            // Screenshots and text capture keep working during a recording —
+            // SCScreenshotManager captures are independent of the stream.
+            Divider().padding(.vertical, 4)
+            screenshotSection
+            Divider().padding(.vertical, 4)
+            textCaptureSection
 
             Divider().padding(.vertical, 4)
             deviceSection

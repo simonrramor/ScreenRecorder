@@ -586,11 +586,19 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Hides the area-recording border/dimming while a screenshot or OCR
+    /// capture reads the screen, so captures taken mid-recording stay clean.
+    private func withRecordingOverlayHidden<T>(_ body: () async -> T) async -> T {
+        recordingAreaOverlayController.setHiddenForCapture(true)
+        defer { recordingAreaOverlayController.setHiddenForCapture(false) }
+        return await body()
+    }
+
     func takeFullScreenScreenshot() async {
         guard await ensureReadyForCapture() else { return }
 
         let display = captureEngine.displayForFullScreenCapture()
-        if let image = await screenshotService.captureFullScreen(display: display) {
+        if let image = await withRecordingOverlayHidden({ await self.screenshotService.captureFullScreen(display: display) }) {
             presentAnnotationEditor(with: image)
         } else if let error = screenshotService.errorMessage {
             showErrorNotification(error)
@@ -613,7 +621,7 @@ class AppState: ObservableObject {
         let display = captureEngine.displayContaining(area)
             ?? configuration.selectedDisplay
             ?? captureEngine.availableDisplays.first
-        if let image = await screenshotService.captureArea(display: display, area: area) {
+        if let image = await withRecordingOverlayHidden({ await self.screenshotService.captureArea(display: display, area: area) }) {
             copyImageToClipboard(image)
         } else if let error = screenshotService.errorMessage {
             showErrorNotification(error)
@@ -661,7 +669,7 @@ class AppState: ObservableObject {
         let display = captureEngine.displayContaining(area)
             ?? configuration.selectedDisplay
             ?? captureEngine.availableDisplays.first
-        if let text = await textCaptureService.captureAndRecognizeArea(display: display, area: area) {
+        if let text = await withRecordingOverlayHidden({ await self.textCaptureService.captureAndRecognizeArea(display: display, area: area) }) {
             TextCaptureService.copyToClipboard(text)
             showSaveNotification("Text copied to clipboard")
         } else {
@@ -686,7 +694,7 @@ class AppState: ObservableObject {
         let display = captureEngine.displayContaining(area)
             ?? configuration.selectedDisplay
             ?? captureEngine.availableDisplays.first
-        guard let (cgImage, observations) = await textCaptureService.captureObservations(display: display, area: area) else {
+        guard let (cgImage, observations) = await withRecordingOverlayHidden({ await self.textCaptureService.captureObservations(display: display, area: area) }) else {
             showErrorNotification(textCaptureService.errorMessage ?? "Failed to capture the selected area")
             return
         }
@@ -764,7 +772,7 @@ class AppState: ObservableObject {
         switch screenshotMode {
         case .fullScreen:
             let display = captureEngine.displayForFullScreenCapture()
-            if let image = await screenshotService.captureFullScreen(display: display) {
+            if let image = await withRecordingOverlayHidden({ await self.screenshotService.captureFullScreen(display: display) }) {
                 copyImageToClipboard(image)
             } else if let error = screenshotService.errorMessage {
                 showErrorNotification(error)
