@@ -6,6 +6,23 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.10</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Screenshots and text capture now stay available while a screen recording is running — the menu bar no longer hides them during a recording</li>
+                    <li>Screenshots taken during an area recording come out clean: the recording border and dimming hide for the instant of capture</li>
+                </ul>
+            ]]></description>
+            <pubDate>Tue, 07 Jul 2026 09:03:05 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.10/Captr.dmg"
+                       sparkle:version="36"
+                       sparkle:shortVersionString="1.4.10"
+                       sparkle:edSignature="PErMpCaAAs3q/ecIaiOp/X7ZUa8NU+37DlqsNRx2W99u0jEcMv2liQHk16/rajcHAaaB7AEquHf07IC0WmRPCQ=="
+                       length="2424168"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.9</title>
             <description><![CDATA[
                 <ul>
