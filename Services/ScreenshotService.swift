@@ -8,60 +8,82 @@ class ScreenshotService: ObservableObject {
     @Published var lastScreenshot: NSImage?
     @Published var errorMessage: String?
 
-    // MARK: - Auto-hidden Dock exclusion
+    // MARK: - Dock overlay exclusion
     //
-    // Area selections end with the cursor parked at a screen edge, which
-    // slides the auto-hidden Dock in *under the selection overlay* right as
-    // the capture fires — so a Dock the user never saw shows up in the shot.
-    // Exclude the Dock bar from display captures while it's set to auto-hide;
-    // a pinned (always-visible) Dock stays in shots like the system tool.
-    // Only the bar itself is excluded (layer kCGDockWindowLevel): the Dock
-    // process also owns the desktop wallpaper windows, which must stay.
+    // The Dock process draws more than its bar: the ⌘-tab app switcher,
+    // Launchpad, and Mission Control chrome are all Dock windows that can
+    // pop over the screen at the exact instant a capture fires (tabbing
+    // away right after an area selection paints the app switcher across
+    // the shot). Excluding a fixed window list can't catch those — they
+    // don't exist when the list is built. Instead, exclude the whole Dock
+    // application and re-include only its stable windows: the wallpaper
+    // (negative layers, must stay in shots) and, when the Dock is pinned
+    // visible, the bar itself so shots stay what-you-see. The auto-hidden
+    // bar and every transient Dock overlay are then excluded even when
+    // they appear mid-capture.
 
-    private static var cachedDockBarWindows: [SCWindow] = []
+    private struct DockExclusion {
+        let application: SCRunningApplication
+        let exceptedWindows: [SCWindow]
+        let dockPID: pid_t
+        let dockWasAutoHidden: Bool
+    }
+
+    private static var cachedDockExclusion: DockExclusion?
 
     private static var dockAutoHides: Bool {
         UserDefaults(suiteName: "com.apple.dock")?.bool(forKey: "autohide") ?? false
     }
 
-    private static func transientDockExclusion() async -> [SCWindow] {
-        guard dockAutoHides else { return [] }
-
-        if !cachedDockBarWindows.isEmpty, cachedWindowsAreStillDockBars() {
-            // Serve the validated cache and refresh behind this capture so
-            // the capture itself never waits on window enumeration.
-            Task { await refreshDockBarWindows() }
-            return cachedDockBarWindows
+    static func displayFilterExcludingDockOverlays(for display: SCDisplay) async -> SCContentFilter {
+        guard let exclusion = await currentDockExclusion() else {
+            return SCContentFilter(display: display, excludingWindows: [])
         }
-        return await refreshDockBarWindows()
+        return SCContentFilter(
+            display: display,
+            excludingApplications: [exclusion.application],
+            exceptingWindows: exclusion.exceptedWindows
+        )
     }
 
-    /// WindowServer recycles window IDs: after a display change the Dock
-    /// rebuilds its windows, and a cached handle can end up naming some
-    /// other app's window — excluding that punches the frontmost window
-    /// out of the capture. Verify every cached ID still belongs to a
-    /// Dock-bar window (cheap, metadata only) before trusting the cache.
-    private static func cachedWindowsAreStillDockBars() -> Bool {
-        guard let infos = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+    private static func currentDockExclusion() async -> DockExclusion? {
+        if let cached = cachedDockExclusion, cachedExclusionStillValid(cached) {
+            // Serve the validated cache and refresh behind this capture so
+            // the capture itself never waits on window enumeration.
+            Task { await refreshDockExclusion() }
+            return cached
+        }
+        return await refreshDockExclusion()
+    }
+
+    /// WindowServer recycles window IDs and the Dock rebuilds its windows
+    /// on display changes; a stale excepted handle could re-include some
+    /// other app's window — or lose the wallpaper. Cheap metadata check
+    /// that the Dock process and every excepted window are still what
+    /// they were when cached.
+    private static func cachedExclusionStillValid(_ cached: DockExclusion) -> Bool {
+        guard cached.dockWasAutoHidden == dockAutoHides,
+              let dockPID = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
+                  .first?.processIdentifier,
+              dockPID == cached.dockPID,
+              let infos = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
 
-        let dockPID = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
-            .first?.processIdentifier
         let dockLevel = Int(CGWindowLevelForKey(.dockWindow))
-
-        var liveDockBarIDs = Set<CGWindowID>()
+        var liveExceptableIDs = Set<CGWindowID>()
         for info in infos {
             guard let id = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
                   let ownerPID = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
                   ownerPID == dockPID,
-                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == dockLevel else { continue }
-            liveDockBarIDs.insert(id)
+                  let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue,
+                  layer < 0 || layer == dockLevel else { continue }
+            liveExceptableIDs.insert(id)
         }
 
         return cachedExclusionsStillValid(
-            cachedIDs: cachedDockBarWindows.map(\.windowID),
-            liveDockBarIDs: liveDockBarIDs
+            cachedIDs: cached.exceptedWindows.map(\.windowID),
+            liveDockBarIDs: liveExceptableIDs
         )
     }
 
@@ -69,23 +91,45 @@ class ScreenshotService: ObservableObject {
         !cachedIDs.isEmpty && cachedIDs.allSatisfy(liveDockBarIDs.contains)
     }
 
+    /// Which Dock windows stay in captures: wallpaper always; the bar only
+    /// when it's pinned visible. Everything else the Dock draws (app
+    /// switcher, Launchpad, Mission Control) is excluded.
+    static func shouldExceptDockWindow(layer: Int, dockAutoHides: Bool, dockLevel: Int) -> Bool {
+        layer < 0 || (!dockAutoHides && layer == dockLevel)
+    }
+
     @discardableResult
-    private static func refreshDockBarWindows() async -> [SCWindow] {
-        // onScreenWindowsOnly must be false: an auto-hidden Dock sits
-        // offscreen at enumeration time, which is exactly when we need it.
+    private static func refreshDockExclusion() async -> DockExclusion? {
+        // onScreenWindowsOnly must be false: an auto-hidden Dock bar sits
+        // offscreen at enumeration time.
         guard let content = try? await SCShareableContent.excludingDesktopWindows(
             false,
             onScreenWindowsOnly: false
-        ) else {
-            return cachedDockBarWindows
+        ), let dockApp = content.applications.first(where: { $0.bundleIdentifier == "com.apple.dock" }) else {
+            return cachedDockExclusion
         }
 
         let dockLevel = Int(CGWindowLevelForKey(.dockWindow))
-        cachedDockBarWindows = content.windows.filter { window in
+        let autoHides = dockAutoHides
+        let excepted = content.windows.filter { window in
             window.owningApplication?.bundleIdentifier == "com.apple.dock"
-                && window.windowLayer == dockLevel
+                && shouldExceptDockWindow(layer: window.windowLayer, dockAutoHides: autoHides, dockLevel: dockLevel)
         }
-        return cachedDockBarWindows
+
+        // Without the wallpaper windows identified, excluding the Dock app
+        // would punch the desktop picture out of shots — skip exclusion.
+        guard !excepted.isEmpty else {
+            cachedDockExclusion = nil
+            return nil
+        }
+
+        cachedDockExclusion = DockExclusion(
+            application: dockApp,
+            exceptedWindows: excepted,
+            dockPID: dockApp.processID,
+            dockWasAutoHidden: autoHides
+        )
+        return cachedDockExclusion
     }
 
     func captureFullScreen(display: SCDisplay?) async -> NSImage? {
@@ -97,7 +141,7 @@ class ScreenshotService: ObservableObject {
         }
 
         do {
-            let filter = SCContentFilter(display: display, excludingWindows: await Self.transientDockExclusion())
+            let filter = await Self.displayFilterExcludingDockOverlays(for: display)
             let config = SCStreamConfiguration()
             let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
             config.width = Int(CGFloat(display.width) * scale)
@@ -172,7 +216,7 @@ class ScreenshotService: ObservableObject {
             throw NSError(domain: "ScreenshotService", code: 1, userInfo: [NSLocalizedDescriptionKey: "No display available"])
         }
 
-        let filter = SCContentFilter(display: display, excludingWindows: await transientDockExclusion())
+        let filter = await displayFilterExcludingDockOverlays(for: display)
         let config = SCStreamConfiguration()
         let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
         config.width = Int(CGFloat(display.width) * scale)

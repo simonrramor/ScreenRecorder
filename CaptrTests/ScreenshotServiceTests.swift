@@ -109,4 +109,31 @@ final class ScreenshotServiceTests: XCTestCase {
             liveDockBarIDs: []
         ))
     }
+
+    // MARK: - Which Dock windows stay in captures
+    //
+    // The Dock app is excluded wholesale (that's what removes transient
+    // overlays like the ⌘-tab app switcher); these rules pick the windows
+    // that get re-included.
+
+    private let dockLevel = 20
+
+    func testWallpaperWindowsAlwaysStayInCaptures() {
+        XCTAssertTrue(ScreenshotService.shouldExceptDockWindow(layer: -2147483624, dockAutoHides: true, dockLevel: dockLevel))
+        XCTAssertTrue(ScreenshotService.shouldExceptDockWindow(layer: -2147483624, dockAutoHides: false, dockLevel: dockLevel))
+    }
+
+    func testPinnedDockBarStaysInCaptures() {
+        XCTAssertTrue(ScreenshotService.shouldExceptDockWindow(layer: dockLevel, dockAutoHides: false, dockLevel: dockLevel))
+    }
+
+    func testAutoHiddenDockBarIsExcluded() {
+        XCTAssertFalse(ScreenshotService.shouldExceptDockWindow(layer: dockLevel, dockAutoHides: true, dockLevel: dockLevel))
+    }
+
+    func testAppSwitcherStyleOverlaysAreAlwaysExcluded() {
+        // Transient Dock overlays live at positive non-bar levels.
+        XCTAssertFalse(ScreenshotService.shouldExceptDockWindow(layer: 101, dockAutoHides: true, dockLevel: dockLevel))
+        XCTAssertFalse(ScreenshotService.shouldExceptDockWindow(layer: 101, dockAutoHides: false, dockLevel: dockLevel))
+    }
 }
