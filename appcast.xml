@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.11</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fixed screenshots sometimes showing content from behind the window being captured: after a monitor was plugged in or removed, a stale internal exclusion could hide the frontmost window from area and full-screen captures</li>
+                </ul>
+            ]]></description>
+            <pubDate>Thu, 09 Jul 2026 12:06:30 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.11/Captr.dmg"
+                       sparkle:version="37"
+                       sparkle:shortVersionString="1.4.11"
+                       sparkle:edSignature="VDSrLuggWmt9khRcGI+VzGxThfWxwBYqYSVtv2cMuiF+hAoVxqLoyTTrjCs6k1VRITBQN79QQxjzyc6q4Ux7AA=="
+                       length="2435514"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.10</title>
             <description><![CDATA[
                 <ul>
