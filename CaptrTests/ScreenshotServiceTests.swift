@@ -75,4 +75,38 @@ final class ScreenshotServiceTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Dock exclusion cache validation
+    //
+    // Window IDs are recycled by WindowServer; a stale cached exclusion can
+    // name another app's window and punch it out of screenshots. Any cached
+    // ID no longer backed by a live Dock-bar window must invalidate the cache.
+
+    func testCachedExclusions_allIDsStillDockBars_isValid() {
+        XCTAssertTrue(ScreenshotService.cachedExclusionsStillValid(
+            cachedIDs: [101, 102],
+            liveDockBarIDs: [101, 102, 103]
+        ))
+    }
+
+    func testCachedExclusions_recycledID_invalidatesCache() {
+        XCTAssertFalse(ScreenshotService.cachedExclusionsStillValid(
+            cachedIDs: [101, 555],
+            liveDockBarIDs: [101, 102]
+        ))
+    }
+
+    func testCachedExclusions_emptyCache_isInvalid() {
+        XCTAssertFalse(ScreenshotService.cachedExclusionsStillValid(
+            cachedIDs: [],
+            liveDockBarIDs: [101]
+        ))
+    }
+
+    func testCachedExclusions_noLiveDockWindows_invalidatesCache() {
+        XCTAssertFalse(ScreenshotService.cachedExclusionsStillValid(
+            cachedIDs: [101],
+            liveDockBarIDs: []
+        ))
+    }
 }

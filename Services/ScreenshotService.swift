@@ -27,13 +27,46 @@ class ScreenshotService: ObservableObject {
     private static func transientDockExclusion() async -> [SCWindow] {
         guard dockAutoHides else { return [] }
 
-        if !cachedDockBarWindows.isEmpty {
-            // Serve the cached handles and refresh behind this capture so the
-            // capture itself never waits on window enumeration.
+        if !cachedDockBarWindows.isEmpty, cachedWindowsAreStillDockBars() {
+            // Serve the validated cache and refresh behind this capture so
+            // the capture itself never waits on window enumeration.
             Task { await refreshDockBarWindows() }
             return cachedDockBarWindows
         }
         return await refreshDockBarWindows()
+    }
+
+    /// WindowServer recycles window IDs: after a display change the Dock
+    /// rebuilds its windows, and a cached handle can end up naming some
+    /// other app's window — excluding that punches the frontmost window
+    /// out of the capture. Verify every cached ID still belongs to a
+    /// Dock-bar window (cheap, metadata only) before trusting the cache.
+    private static func cachedWindowsAreStillDockBars() -> Bool {
+        guard let infos = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+
+        let dockPID = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
+            .first?.processIdentifier
+        let dockLevel = Int(CGWindowLevelForKey(.dockWindow))
+
+        var liveDockBarIDs = Set<CGWindowID>()
+        for info in infos {
+            guard let id = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  let ownerPID = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  ownerPID == dockPID,
+                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == dockLevel else { continue }
+            liveDockBarIDs.insert(id)
+        }
+
+        return cachedExclusionsStillValid(
+            cachedIDs: cachedDockBarWindows.map(\.windowID),
+            liveDockBarIDs: liveDockBarIDs
+        )
+    }
+
+    static func cachedExclusionsStillValid(cachedIDs: [CGWindowID], liveDockBarIDs: Set<CGWindowID>) -> Bool {
+        !cachedIDs.isEmpty && cachedIDs.allSatisfy(liveDockBarIDs.contains)
     }
 
     @discardableResult
