@@ -223,18 +223,37 @@ struct MenuBarView: View {
                     .font(.system(size: 13))
                     .padding(.horizontal, 4)
 
-                Picker(selection: Binding(
-                    get: { appState.useFastIOSMirroring },
-                    set: { appState.setFastIOSMirroring($0) }
-                )) {
-                    Text("Stable").tag(false)
-                    Text("Fast").tag(true)
-                } label: {
-                    EmptyView()
+                if appState.canUseFastIOSMirroring {
+                    Picker(selection: Binding(
+                        get: { appState.useFastIOSMirroring },
+                        set: { appState.setFastIOSMirroring($0) }
+                    )) {
+                        Text("Stable").tag(false)
+                        Text("Fast").tag(true)
+                    } label: {
+                        EmptyView()
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 4)
+                } else {
+                    HStack {
+                        Text("Stable")
+                            .font(.system(size: 12, weight: .semibold))
+                        Spacer()
+                        Text("Fast disabled")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
+                    .padding(.horizontal, 4)
+                    .help("Fast iOS mirroring is disabled in this build because macOS native iPhone capture is crashing.")
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 4)
             }
         }
     }

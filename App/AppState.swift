@@ -13,6 +13,7 @@ class AppState: ObservableObject {
     }
 
     private let userDefaults: UserDefaults
+    private let fastIOSMirroringAllowed: Bool
 
     @Published var captureEngine = CaptureEngine()
     @Published var screenshotService = ScreenshotService()
@@ -48,7 +49,7 @@ class AppState: ObservableObject {
     @Published var notificationIsError: Bool = false
     @Published var isRecordingShortcut: Bool = false
     @Published var showSettingsPopover: Bool = false
-    @Published var useFastIOSMirroring: Bool {
+    @Published private(set) var useFastIOSMirroring: Bool {
         didSet {
             userDefaults.set(useFastIOSMirroring, forKey: Defaults.useFastIOSMirroring)
         }
@@ -68,15 +69,31 @@ class AppState: ObservableObject {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.userDefaults = userDefaults
+        self.fastIOSMirroringAllowed = IOSDeviceMirror.nativeLowLatencyMirroringEnabled(environment: environment)
 
         if let storedPreference = userDefaults.object(forKey: Defaults.useFastIOSMirroring) as? Bool {
-            self.useFastIOSMirroring = storedPreference
+            self.useFastIOSMirroring = fastIOSMirroringAllowed ? storedPreference : false
+            if storedPreference && !fastIOSMirroringAllowed {
+                userDefaults.set(false, forKey: Defaults.useFastIOSMirroring)
+            }
         } else {
-            self.useFastIOSMirroring = IOSDeviceMirror.nativeLowLatencyMirroringEnabled(environment: environment)
+            self.useFastIOSMirroring = fastIOSMirroringAllowed
         }
     }
 
+    var canUseFastIOSMirroring: Bool {
+        fastIOSMirroringAllowed
+    }
+
     func setFastIOSMirroring(_ enabled: Bool) {
+        guard !enabled || canUseFastIOSMirroring else {
+            if useFastIOSMirroring {
+                useFastIOSMirroring = false
+            }
+            showErrorNotification("Fast iOS mirroring is disabled in this build because macOS native iPhone capture is crashing. Stable mode is still available.")
+            return
+        }
+
         guard useFastIOSMirroring != enabled else { return }
         useFastIOSMirroring = enabled
 
@@ -242,7 +259,7 @@ class AppState: ObservableObject {
             return iosDeviceMirror.isLowLatencyMirroring ? .lowLatency : .compatibility
         }
 
-        guard useFastIOSMirroring else {
+        guard canUseFastIOSMirroring, useFastIOSMirroring else {
             return openCompatibilityIOSMirror(udid: udid, deviceName: deviceName)
         }
 

@@ -273,7 +273,10 @@ struct ContentView: View {
             iosMirrorModeButton(
                 title: "Fast",
                 isSelected: appState.useFastIOSMirroring,
-                help: "Use fast iOS mirroring. Lower latency, but may be less stable on some macOS/iPhone states."
+                isEnabled: appState.canUseFastIOSMirroring,
+                help: appState.canUseFastIOSMirroring
+                    ? "Use fast iOS mirroring. Lower latency, but may be less stable on some macOS/iPhone states."
+                    : "Fast iOS mirroring is disabled in this build because macOS native iPhone capture is crashing."
             ) {
                 appState.setFastIOSMirroring(true)
             }
@@ -289,6 +292,7 @@ struct ContentView: View {
     private func iosMirrorModeButton(
         title: String,
         isSelected: Bool,
+        isEnabled: Bool = true,
         help: String,
         action: @escaping () -> Void
     ) -> some View {
@@ -309,6 +313,8 @@ struct ContentView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.5)
         .help(help)
     }
 
@@ -381,20 +387,37 @@ struct SettingsPopup: View {
                 }
 
                 Section("Device Mirroring") {
-                    Picker(selection: Binding(
-                        get: { appState.useFastIOSMirroring },
-                        set: { appState.setFastIOSMirroring($0) }
-                    )) {
-                        Text("Stable").tag(false)
-                        Text("Fast").tag(true)
-                    } label: {
-                        Label("iOS Mirror Mode", systemImage: "iphone")
+                    if appState.canUseFastIOSMirroring {
+                        Picker(selection: Binding(
+                            get: { appState.useFastIOSMirroring },
+                            set: { appState.setFastIOSMirroring($0) }
+                        )) {
+                            Text("Stable").tag(false)
+                            Text("Fast").tag(true)
+                        } label: {
+                            Label("iOS Mirror Mode", systemImage: "iphone")
+                        }
+                        .pickerStyle(.segmented)
+                    } else {
+                        HStack {
+                            Label("iOS Mirror Mode", systemImage: "iphone")
+                            Spacer()
+                            Text("Stable")
+                                .font(.caption.weight(.semibold))
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 10)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.secondary.opacity(0.14))
+                                )
+                        }
                     }
-                    .pickerStyle(.segmented)
 
-                    Text(appState.useFastIOSMirroring
-                        ? "Lower latency using macOS native iPhone capture. Switch off if it crashes after wake or disconnect."
-                        : "Stable mode avoids the macOS iPhone capture crash, but updates more slowly.")
+                    Text(appState.canUseFastIOSMirroring
+                        ? (appState.useFastIOSMirroring
+                            ? "Lower latency using macOS native iPhone capture. Switch off if it crashes after wake or disconnect."
+                            : "Stable mode avoids the macOS iPhone capture crash, but updates more slowly.")
+                        : "Fast mode is disabled in this build because macOS native iPhone capture is crashing. Stable mode is still available.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -3,6 +3,7 @@ import XCTest
 
 @MainActor
 final class IOSMirrorTransportPolicyTests: XCTestCase {
+    private static let useFastIOSMirroringKey = "useFastIOSMirroring"
 
     func testNativeLowLatencyMirrorIsDisabledWithoutExplicitFlag() {
         XCTAssertFalse(IOSDeviceMirror.nativeLowLatencyMirroringEnabled(environment: [:]))
@@ -22,6 +23,7 @@ final class IOSMirrorTransportPolicyTests: XCTestCase {
         let appState = AppState(userDefaults: defaults, environment: [:])
 
         XCTAssertFalse(appState.useFastIOSMirroring)
+        XCTAssertFalse(appState.canUseFastIOSMirroring)
     }
 
     func testAppStateUsesEnvironmentFlagAsInitialFastModeOnlyWhenPreferenceIsUnset() {
@@ -32,16 +34,38 @@ final class IOSMirrorTransportPolicyTests: XCTestCase {
         )
 
         XCTAssertTrue(appState.useFastIOSMirroring)
+        XCTAssertTrue(appState.canUseFastIOSMirroring)
     }
 
     func testFastModeTogglePersistsAndOverridesEnvironmentDefault() {
         let defaults = Self.temporaryDefaults()
         let firstAppState = AppState(userDefaults: defaults, environment: ["CAPTR_ENABLE_NATIVE_IOS_MIRROR": "1"])
 
-        firstAppState.useFastIOSMirroring = false
+        firstAppState.setFastIOSMirroring(false)
 
         let secondAppState = AppState(userDefaults: defaults, environment: ["CAPTR_ENABLE_NATIVE_IOS_MIRROR": "1"])
         XCTAssertFalse(secondAppState.useFastIOSMirroring)
+    }
+
+    func testStoredFastModeIsIgnoredAndClearedWithoutExplicitFlag() {
+        let defaults = Self.temporaryDefaults()
+        defaults.set(true, forKey: Self.useFastIOSMirroringKey)
+
+        let appState = AppState(userDefaults: defaults, environment: [:])
+
+        XCTAssertFalse(appState.canUseFastIOSMirroring)
+        XCTAssertFalse(appState.useFastIOSMirroring)
+        XCTAssertFalse(defaults.bool(forKey: Self.useFastIOSMirroringKey))
+    }
+
+    func testFastModeToggleIsRejectedWithoutExplicitFlag() {
+        let defaults = Self.temporaryDefaults()
+        let appState = AppState(userDefaults: defaults, environment: [:])
+
+        appState.setFastIOSMirroring(true)
+
+        XCTAssertFalse(appState.useFastIOSMirroring)
+        XCTAssertFalse(defaults.bool(forKey: Self.useFastIOSMirroringKey))
     }
 
     private static func temporaryDefaults() -> UserDefaults {
