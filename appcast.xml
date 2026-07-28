@@ -6,6 +6,24 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.12</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Disable the crash-prone native Fast iOS mirror path in live builds and clear any old saved Fast preference so iPhone mirroring opens in Stable mode</li>
+                    <li>Keep the Fast iOS mirror controls visible as disabled in normal builds, with Stable mode still available</li>
+                    <li>Exclude transient Dock overlays such as the command-tab switcher from screenshots</li>
+                </ul>
+            ]]></description>
+            <pubDate>Tue, 28 Jul 2026 08:42:51 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.12/Captr.dmg"
+                       sparkle:version="38"
+                       sparkle:shortVersionString="1.4.12"
+                       sparkle:edSignature="clQzFCy3WclLccBECJnzZiPguNicVv0HShOmb2imvoZruFjHLLKds6ryxwlD62p9C/L4lGSAIXIquokzDEhgCA=="
+                       length="2437418"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.11</title>
             <description><![CDATA[
                 <ul>
