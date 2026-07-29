@@ -6,6 +6,23 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.13</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fix iOS mirroring getting stuck on Connecting by timing out hung device-discovery tools and cleaning up stuck child processes</li>
+                    <li>Add regression coverage for command execution timeouts so future device scans cannot block indefinitely</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 29 Jul 2026 08:40:46 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.13/Captr.dmg"
+                       sparkle:version="39"
+                       sparkle:shortVersionString="1.4.13"
+                       sparkle:edSignature="zRN1V/3Su1VCp9n3+9k2TFqsgm3J59C3TbQLVK/ApCsmHGEkrSahZC+QYeBm7D22oIUpDI1dXgu2vO8DF2p4CA=="
+                       length="2438633"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.12</title>
             <description><![CDATA[
                 <ul>
