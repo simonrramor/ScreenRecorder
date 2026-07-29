@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Combine
+import Darwin
 
 struct ConnectedDevice: Identifiable, Hashable {
     let id: String
@@ -33,6 +34,12 @@ struct ConnectedDevice: Identifiable, Hashable {
 
 @MainActor
 class DeviceManager: ObservableObject {
+    private enum CommandTimeout {
+        static let deviceScan: TimeInterval = 3
+        static let deviceDiagnostics: TimeInterval = 5
+        static let terminationGrace: TimeInterval = 0.5
+    }
+
     @Published var devices: [ConnectedDevice] = []
     @Published var adbPath: String?
     @Published var isInstalling = false
@@ -133,7 +140,11 @@ class DeviceManager: ObservableObject {
         }
 
         let output = await Task.detached {
-            DeviceManager.runCommand(xcrunPath, arguments: ["devicectl", "list", "devices"])
+            DeviceManager.runCommand(
+                xcrunPath,
+                arguments: ["devicectl", "list", "devices"],
+                timeout: CommandTimeout.deviceDiagnostics
+            )
         }.value
 
         let hasCoreDeviceIOSDevice = output
@@ -157,7 +168,7 @@ class DeviceManager: ObservableObject {
         ideviceInfoPath: String?,
         knownNames: [String: String]
     ) -> [ConnectedDevice] {
-        let output = runCommand(ideviceIdPath, arguments: ["-l"])
+        let output = runCommand(ideviceIdPath, arguments: ["-l"], timeout: CommandTimeout.deviceScan)
         var devices: [ConnectedDevice] = []
 
         for line in output.components(separatedBy: "\n") {
@@ -168,7 +179,11 @@ class DeviceManager: ObservableObject {
             if let cached = knownNames[udid] {
                 name = cached
             } else if let ideviceInfoPath {
-                let raw = runCommand(ideviceInfoPath, arguments: ["-u", udid, "-k", "DeviceName"])
+                let raw = runCommand(
+                    ideviceInfoPath,
+                    arguments: ["-u", udid, "-k", "DeviceName"],
+                    timeout: CommandTimeout.deviceScan
+                )
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 name = raw.isEmpty ? "iOS Device" : raw
             } else {
@@ -191,7 +206,11 @@ class DeviceManager: ObservableObject {
 
         let path = adbPath
         Task.detached {
-            let output = DeviceManager.runCommand(path, arguments: ["devices", "-l"])
+            let output = DeviceManager.runCommand(
+                path,
+                arguments: ["devices", "-l"],
+                timeout: CommandTimeout.deviceScan
+            )
             var androidDevices: [ConnectedDevice] = []
 
             for line in output.components(separatedBy: "\n") {
@@ -260,7 +279,11 @@ class DeviceManager: ObservableObject {
         }
     }
 
-    nonisolated static func runCommand(_ path: String, arguments: [String]) -> String {
+    nonisolated static func runCommand(
+        _ path: String,
+        arguments: [String],
+        timeout: TimeInterval = CommandTimeout.deviceScan
+    ) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
@@ -269,8 +292,25 @@ class DeviceManager: ObservableObject {
         process.standardOutput = pipe
         process.standardError = Pipe()
 
-        try? process.run()
-        process.waitUntilExit()
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            finished.signal()
+        }
+
+        do {
+            try process.run()
+        } catch {
+            return ""
+        }
+
+        if finished.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+
+            if finished.wait(timeout: .now() + CommandTimeout.terminationGrace) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + CommandTimeout.terminationGrace)
+            }
+        }
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8) ?? ""
