@@ -211,12 +211,32 @@ class ScreenshotService: ObservableObject {
     /// area-screenshot path and the OCR/translation pipeline so neither has to
     /// touch the deprecated CGWindowListCreateImage (which triggers monthly
     /// permission re-prompts on macOS 15+).
+    ///
+    /// macOS 15.2 added a region-native screenshot API. Use it whenever it is
+    /// available: it captures the requested screen-space rect directly and
+    /// avoids mixing a display from one SCShareableContent snapshot with
+    /// cached Dock SCWindow handles from another snapshot. That mix can cause
+    /// ScreenCaptureKit to omit the frontmost window and reveal the content
+    /// underneath it. The filtered full-display path remains as a fallback
+    /// for macOS 15.0–15.1.
     static func captureAreaCGImage(display: SCDisplay?, area: CGRect) async throws -> CGImage {
         guard let display = display else {
             throw NSError(domain: "ScreenshotService", code: 1, userInfo: [NSLocalizedDescriptionKey: "No display available"])
         }
 
-        let filter = await displayFilterExcludingDockOverlays(for: display)
+        let screenRect = area.standardized
+        guard screenRect.width > 0, screenRect.height > 0 else {
+            throw NSError(domain: "ScreenshotService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Selected area is empty"])
+        }
+
+        if #available(macOS 15.2, *) {
+            return try await SCScreenshotManager.captureImage(in: screenRect)
+        }
+
+        // The direct region API is unavailable on macOS 15.0–15.1. Keep the
+        // fallback deliberately unfiltered so a stale Dock exception can
+        // never hide the user's frontmost window.
+        let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
         let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
         config.width = Int(CGFloat(display.width) * scale)
@@ -232,7 +252,7 @@ class ScreenshotService: ObservableObject {
 
         let imageSize = CGSize(width: CGFloat(fullImage.width), height: CGFloat(fullImage.height))
         guard let cropRect = ScreenGeometry.pixelCropRect(
-            for: area,
+            for: screenRect,
             displayID: display.displayID,
             imageSize: imageSize
         ) else {
