@@ -6,6 +6,23 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.16</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Keep Captr exclusively in the macOS menu bar without a Dock or Command-Tab icon.</li>
+                    <li>Continue allowing Captr windows to open and receive focus as a menu-bar accessory app.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Fri, 31 Jul 2026 12:41:56 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.16/Captr.dmg"
+                       sparkle:version="42"
+                       sparkle:shortVersionString="1.4.16"
+                       sparkle:edSignature="0Qjdc6cgRuCQN8JbRL0ekvH6iI2aIJ8SB3DbJcQZk2bCaipNWZM/02SFae+KYX5d667UcYU8yASXP7eKukWWBA=="
+                       length="2557166"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.15</title>
             <description><![CDATA[
                 <ul>
