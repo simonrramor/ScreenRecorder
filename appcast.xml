@@ -6,6 +6,25 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.15</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fix area and window capture occasionally showing content behind the frontmost app.</li>
+                    <li>Prevent OCR, translation, and recording failures during cancellation or shutdown.</li>
+                    <li>Stabilize iPhone and Android mirroring with bounded device commands and reliable recording finalization.</li>
+                    <li>Harden media handling, keyboard shortcuts, Keychain errors, and the signed update pipeline.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Fri, 31 Jul 2026 11:47:07 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.15/Captr.dmg"
+                       sparkle:version="41"
+                       sparkle:shortVersionString="1.4.15"
+                       sparkle:edSignature="+o04T4QnMhphVxceESi8sZPxNt+3HwtWYDmckM+8mJVdLum+wOCb85uSmjJcGjWq0j/PWC1G/0H07D8+ogP5Bg=="
+                       length="2557198"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.14</title>
             <description><![CDATA[
                 <ul>
