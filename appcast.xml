@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.14</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Fix area screenshots occasionally capturing windows behind the frontmost app.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Fri, 31 Jul 2026 09:53:53 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.14/Captr.dmg"
+                       sparkle:version="40"
+                       sparkle:shortVersionString="1.4.14"
+                       sparkle:edSignature="9OgUClYm9bxY4ovWMWJ9neeHOXjLAYgWV/2uE9w2n8ot860Tjd/TSiJ/k4sO+lzI8go43lKaUEA5WHSWxvyeCw=="
+                       length="2440134"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.13</title>
             <description><![CDATA[
                 <ul>
