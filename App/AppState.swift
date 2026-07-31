@@ -33,6 +33,7 @@ class AppState: ObservableObject {
     private var iosMirrorCancellable: AnyCancellable?
     private var androidMirrorCancellable: AnyCancellable?
     private var screenParametersCancellable: AnyCancellable?
+    private var hasInitialized = false
 
     @Published var pendingCaptureAction: CaptureType?
 
@@ -55,6 +56,8 @@ class AppState: ObservableObject {
         }
     }
     private var notificationDismissTask: Task<Void, Never>?
+    private var translationTask: Task<Void, Never>?
+    private var translationOperationID: UUID?
 
     private let areaSelectionController = AreaSelectionWindowController()
     private let windowSelectionController = WindowSelectionWindowController()
@@ -116,6 +119,11 @@ class AppState: ObservableObject {
     }
 
     func initialize() async {
+        guard !hasInitialized else { return }
+        // Set before the first suspension so a second WindowGroup onAppear
+        // cannot start another initialization pass while this one is waiting.
+        hasInitialized = true
+
         await permissionsManager.checkAllPermissions()
         await captureEngine.refreshAvailableContent()
         await mediaLibrary.loadLibrary()
@@ -151,6 +159,7 @@ class AppState: ObservableObject {
         }
         screenParametersCancellable = NotificationCenter.default
             .publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
                     await self?.captureEngine.refreshAvailableContent()
@@ -159,6 +168,7 @@ class AppState: ObservableObject {
     }
 
     private func setupAndroidMirror() {
+        guard androidDeviceMirror == nil else { return }
         guard let adb = deviceManager.adbPath else { return }
 
         let mirror = AndroidDeviceMirror(adbPath: adb)
@@ -190,19 +200,10 @@ class AppState: ObservableObject {
         isStartingIOSMirror = true
         defer { isStartingIOSMirror = false }
 
-        var device = deviceManager.iosDevices.first
-
-        if deviceManager.iosDevices.isEmpty {
-            deviceManager.scanIOSDevices()
-
-            for _ in 0..<20 where deviceManager.iosDevices.isEmpty {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-
-            device = deviceManager.iosDevices.first
-        }
-
-        if device == nil {
+        let device: ConnectedDevice?
+        if let connectedDevice = deviceManager.iosDevices.first {
+            device = connectedDevice
+        } else {
             device = await deviceManager.refreshIOSDevicesNow().first
         }
 
@@ -226,15 +227,14 @@ class AppState: ObservableObject {
             return
         }
 
-        if deviceManager.androidDevices.isEmpty {
-            deviceManager.scanAndroidDevices()
-
-            for _ in 0..<10 where deviceManager.androidDevices.isEmpty {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
+        let device: ConnectedDevice?
+        if let connectedDevice = deviceManager.androidDevices.first {
+            device = connectedDevice
+        } else {
+            device = await deviceManager.refreshAndroidDevicesNow().first
         }
 
-        guard let device = deviceManager.androidDevices.first else {
+        guard let device else {
             showErrorNotification("Connect your Android by cable, enable USB debugging, and allow the trust prompt.")
             return
         }
@@ -309,7 +309,7 @@ class AppState: ObservableObject {
     /// Sets up (or reuses) the Android mirror, returning nil with an error
     /// notification when ADB is missing.
     private func preparedAndroidMirror() -> AndroidDeviceMirror? {
-        if androidDeviceMirror == nil || androidDeviceMirror?.isMirroring == false {
+        if androidDeviceMirror == nil {
             setupAndroidMirror()
         }
         guard let mirror = androidDeviceMirror else {
@@ -420,6 +420,36 @@ class AppState: ObservableObject {
         }
     }
 
+    func disconnectIOSMirror() async {
+        if iosDeviceMirror.isRecording {
+            if let url = await iosDeviceMirror.stopRecording() {
+                await mediaLibrary.addRecording(at: url)
+                showSavedNotification("iPhone recording saved")
+            } else {
+                showErrorNotification(iosDeviceMirror.errorMessage ?? "iPhone recording could not be saved")
+            }
+        }
+        iosDeviceMirror.stopMirroring()
+        iosMirrorWindow.closeWindow()
+    }
+
+    func disconnectAndroidMirror() async {
+        guard let mirror = androidDeviceMirror else {
+            androidMirrorWindow.closeWindow()
+            return
+        }
+        if mirror.isRecording || mirror.isFinalizingRecording {
+            if let url = await mirror.stopRecording() {
+                await mediaLibrary.addRecording(at: url)
+                showSavedNotification("Android recording saved")
+            } else {
+                showErrorNotification(mirror.errorMessage ?? "Android recording could not be saved")
+            }
+        }
+        mirror.stopMirroring()
+        androidMirrorWindow.closeWindow()
+    }
+
     func showSavedNotification(_ message: String) {
         showSaveNotification(message)
     }
@@ -464,9 +494,6 @@ class AppState: ObservableObject {
             return
         }
         await captureEngine.refreshAvailableContent()
-
-        // Brief delay to let the overlay disappear before capturing
-        try? await Task.sleep(nanoseconds: 50_000_000)
 
         guard let scWindow = captureEngine.availableWindows.first(where: { $0.windowID == windowID }) else {
             showErrorNotification("Could not capture the selected window")
@@ -524,10 +551,6 @@ class AppState: ObservableObject {
         if let action = pendingCaptureAction {
             pendingCaptureAction = nil
 
-            // Brief delay to let the overlay window fully disappear from the screen
-            // before capturing, so it doesn't appear in the screenshot
-            try? await Task.sleep(nanoseconds: 150_000_000)
-
             switch action {
             case .recording:
                 configuration.mode = .area
@@ -538,7 +561,7 @@ class AppState: ObservableObject {
             case .textCapture:
                 await performTextCapture(area: rect)
             case .translateCapture:
-                await performTranslateCapture(area: rect)
+                beginTranslation(area: rect)
             }
         }
     }
@@ -547,7 +570,28 @@ class AppState: ObservableObject {
         pendingCaptureAction = nil
     }
 
+    func shutdown() {
+        notificationDismissTask?.cancel()
+        notificationDismissTask = nil
+        deviceManager.stopMonitoring()
+        keyboardShortcutManager?.shutdown()
+        keyboardShortcutManager = nil
+        areaSelectionController.closeOverlay()
+        windowSelectionController.closeOverlay()
+        recordingAreaOverlayController.closeOverlay()
+        cancelTranslationOperation(closeOverlay: true)
+        annotationWindowController.closeWindow()
+    }
+
     private func startEngineRecording() async {
+        if configuration.captureMicrophone {
+            let microphoneGranted = await permissionsManager.requestMicrophonePermission()
+            guard microphoneGranted else {
+                recordingAreaOverlayController.closeOverlay()
+                showErrorNotification("Microphone access is required when microphone recording is enabled.")
+                return
+            }
+        }
         await captureEngine.startRecording()
         if captureEngine.state == .idle {
             recordingAreaOverlayController.closeOverlay()
@@ -696,6 +740,7 @@ class AppState: ObservableObject {
 
     func startTranslateCapture() async {
         guard await ensureReadyForCapture() else { return }
+        cancelTranslationOperation(closeOverlay: true)
         // Mount the hidden translation panel while the user draws the
         // selection rectangle so the SwiftUI setup cost is hidden behind
         // their input.
@@ -704,7 +749,33 @@ class AppState: ObservableObject {
         showAreaSelection()
     }
 
-    private func performTranslateCapture(area: CGRect) async {
+    private func beginTranslation(area: CGRect) {
+        cancelTranslationOperation(closeOverlay: true)
+        let operationID = UUID()
+        translationOperationID = operationID
+        translationTask = Task { [weak self] in
+            guard let self else { return }
+            await self.performTranslateCapture(area: area, operationID: operationID)
+            if self.translationOperationID == operationID {
+                self.translationTask = nil
+            }
+        }
+    }
+
+    private func cancelTranslationOperation(closeOverlay: Bool) {
+        translationOperationID = nil
+        translationTask?.cancel()
+        translationTask = nil
+        if closeOverlay {
+            translationOverlayController.close(notify: false)
+        }
+    }
+
+    private func isCurrentTranslation(_ operationID: UUID) -> Bool {
+        translationOperationID == operationID && !Task.isCancelled
+    }
+
+    private func performTranslateCapture(area: CGRect, operationID: UUID) async {
         // Capture the screen area and run OCR first so we have an image to
         // drop into the overlay immediately — perceived latency stays tiny
         // while the translation step runs.
@@ -712,23 +783,29 @@ class AppState: ObservableObject {
             ?? configuration.selectedDisplay
             ?? captureEngine.availableDisplays.first
         guard let (cgImage, observations) = await withRecordingOverlayHidden({ await self.textCaptureService.captureObservations(display: display, area: area) }) else {
+            guard isCurrentTranslation(operationID) else { return }
             showErrorNotification(textCaptureService.errorMessage ?? "Failed to capture the selected area")
             return
         }
+        guard isCurrentTranslation(operationID) else { return }
 
         let initialImage = NSImage(cgImage: cgImage, size: area.size)
         let engineName = translationService.currentEngineName
         translationOverlayController.showLoading(area: area, initialImage: initialImage, engineName: engineName)
+        translationOverlayController.setCloseAction { [weak self] in
+            guard self?.translationOperationID == operationID else { return }
+            self?.cancelTranslationOperation(closeOverlay: false)
+        }
 
         guard !observations.isEmpty else {
             translationOverlayController.showFailed(message: "No text detected") { [weak self] in
-                Task { await self?.performTranslateCapture(area: area) }
+                self?.beginTranslation(area: area)
             }
             return
         }
 
         var blocks = observations.compactMap {
-            VisionTextBlock(observation: $0, imageWidth: cgImage.width, imageHeight: cgImage.height)
+            VisionTextBlock(region: $0, imageWidth: cgImage.width, imageHeight: cgImage.height)
         }
 
         for i in blocks.indices {
@@ -747,15 +824,21 @@ class AppState: ObservableObject {
 
         do {
             let translated = try await translationService.translateBatch(blocks.map(\.originalText), from: source, to: target)
+            guard isCurrentTranslation(operationID) else { return }
             for i in blocks.indices where i < translated.count {
                 blocks[i].translatedText = translated[i]
             }
+        } catch is CancellationError {
+            return
         } catch {
-            translationOverlayController.showFailed(message: "Retry") { [weak self] in
-                Task { await self?.performTranslateCapture(area: area) }
+            guard isCurrentTranslation(operationID) else { return }
+            translationOverlayController.showFailed(message: error.localizedDescription) { [weak self] in
+                self?.beginTranslation(area: area)
             }
             return
         }
+
+        guard isCurrentTranslation(operationID) else { return }
 
         let composited = TranslationCompositor.composite(
             cgImage: cgImage,

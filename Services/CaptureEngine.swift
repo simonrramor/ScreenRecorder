@@ -25,6 +25,9 @@ class CaptureEngine: NSObject, ObservableObject {
     private var recordingStartDate: Date?
     private let audioManager = AudioManager()
     private var outputURL: URL?
+    private var recordingGeneration: UUID?
+    private let videoQueue = DispatchQueue(label: "com.captr.capture.video", qos: .userInteractive)
+    private let audioQueue = DispatchQueue(label: "com.captr.capture.system-audio", qos: .userInitiated)
 
     var configuration = CaptureConfiguration()
 
@@ -47,11 +50,14 @@ class CaptureEngine: NSObject, ObservableObject {
 
     func startRecording() async {
         guard state == .idle else { return }
+        let generation = UUID()
+        recordingGeneration = generation
         state = .preparing
         errorMessage = nil
 
         do {
             await refreshAvailableContent()
+            guard recordingGeneration == generation, state == .preparing else { return }
 
             let filter = try createContentFilter()
             let streamConfig = createStreamConfiguration()
@@ -59,8 +65,7 @@ class CaptureEngine: NSObject, ObservableObject {
             let outputDir = MediaLibraryManager.recordingsDirectory
             try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
-            let fileName = "Screen Recording \(Date().screenRecorderFileName).mp4"
-            let url = outputDir.appendingPathComponent(fileName)
+            let url = CaptureFileURL.unique(in: outputDir, prefix: "Screen Recording", pathExtension: "mp4")
             outputURL = url
 
             let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
@@ -83,10 +88,12 @@ class CaptureEngine: NSObject, ObservableObject {
 
             let vInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             vInput.expectsMediaDataInRealTime = true
+            guard writer.canAdd(vInput) else {
+                throw CaptureError.writingFailed("The video encoder could not be added")
+            }
             writer.add(vInput)
 
-            var aInput: AVAssetWriterInput?
-            if configuration.captureSystemAudio || configuration.captureMicrophone {
+            func makeAudioInput() throws -> AVAssetWriterInput {
                 let audioSettings: [String: Any] = [
                     AVFormatIDKey: kAudioFormatMPEG4AAC,
                     AVSampleRateKey: 48000,
@@ -95,35 +102,48 @@ class CaptureEngine: NSObject, ObservableObject {
                 ]
                 let audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
                 audioWriterInput.expectsMediaDataInRealTime = true
+                guard writer.canAdd(audioWriterInput) else {
+                    throw CaptureError.writingFailed("An audio encoder could not be added")
+                }
                 writer.add(audioWriterInput)
-                aInput = audioWriterInput
+                return audioWriterInput
             }
 
-            let bufferWriter = BufferWriter(assetWriter: writer, videoInput: vInput, audioInput: aInput)
+            let systemAudioInput = configuration.captureSystemAudio ? try makeAudioInput() : nil
+            let microphoneInput = configuration.captureMicrophone ? try makeAudioInput() : nil
+            let bufferWriter = BufferWriter(
+                assetWriter: writer,
+                videoInput: vInput,
+                systemAudioInput: systemAudioInput,
+                microphoneInput: microphoneInput
+            )
             let output = CaptureStreamOutput(bufferWriter: bufferWriter)
             output.onStreamError = { [weak self] message in
                 Task { @MainActor [weak self] in
-                    guard let self = self, self.state.isActive else { return }
-                    self.stopDurationTimer()
-                    self.audioManager.stopMicrophoneCapture()
-                    self.stream = nil
-                    self.streamOutput = nil
-                    self.cleanup()
-                    self.errorMessage = "Recording stopped: \(message)"
-                    self.onStreamError?(self.errorMessage!)
+                    await self?.handleUnexpectedStreamStop(message: message, generation: generation)
                 }
             }
 
             let captureStream = SCStream(filter: filter, configuration: streamConfig, delegate: output)
-            try captureStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: .global(qos: .userInteractive))
+            try captureStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: videoQueue)
 
             if configuration.captureSystemAudio {
-                try captureStream.addStreamOutput(output, type: .audio, sampleHandlerQueue: .global(qos: .userInteractive))
+                try captureStream.addStreamOutput(output, type: .audio, sampleHandlerQueue: audioQueue)
             }
 
-            try await captureStream.startCapture()
+            // Store the session before awaiting startup so cancellation can
+            // tear it down during actor reentrancy.
             stream = captureStream
             streamOutput = output
+            try await captureStream.startCapture()
+            guard recordingGeneration == generation, state == .preparing else {
+                try? await captureStream.stopCapture()
+                bufferWriter.cancelWriting()
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                return
+            }
 
             if configuration.captureMicrophone {
                 audioManager.onError = { [weak self] message in
@@ -132,43 +152,57 @@ class CaptureEngine: NSObject, ObservableObject {
                     }
                 }
                 audioManager.startMicrophoneCapture { [weak bufferWriter] sampleBuffer in
-                    bufferWriter?.appendAudio(sampleBuffer)
+                    bufferWriter?.appendMicrophone(sampleBuffer)
                 }
             }
 
             state = .recording
-            recordingStartDate = Date()
+            recordingStartDate = .now
             startDurationTimer()
 
         } catch {
-            state = .idle
+            guard recordingGeneration == generation else { return }
+            if let stream {
+                try? await stream.stopCapture()
+            }
+            stream = nil
+            streamOutput?.bufferWriter.cancelWriting()
+            streamOutput = nil
+            if let outputURL, FileManager.default.fileExists(atPath: outputURL.path) {
+                try? FileManager.default.removeItem(at: outputURL)
+            }
             errorMessage = "Failed to start recording: \(error.localizedDescription)"
+            cleanup()
         }
     }
 
     func stopRecording() async -> URL? {
-        guard state.isActive else { return nil }
+        guard state.isCapturing else { return nil }
+        recordingGeneration = nil
         state = .stopping
         errorMessage = nil
 
         stopDurationTimer()
         audioManager.stopMicrophoneCapture()
 
+        var stopCaptureWarning: String?
         if let stream = stream {
             do {
                 try await stream.stopCapture()
             } catch {
-                print("Error stopping stream: \(error)")
+                stopCaptureWarning = "The screen stream reported an error while stopping: \(error.localizedDescription)"
             }
         }
         stream = nil
 
         var writerError: Error?
         var receivedFrames = true
+        var writerStatus: AVAssetWriter.Status = .unknown
         if let output = streamOutput {
             await output.bufferWriter.finishWriting()
             writerError = output.bufferWriter.writerError
             receivedFrames = output.bufferWriter.didReceiveFrames
+            writerStatus = output.bufferWriter.writerStatus
         }
         streamOutput = nil
 
@@ -178,7 +212,8 @@ class CaptureEngine: NSObject, ObservableObject {
         if let url = url {
             let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
             let size = (attrs?[.size] as? Int64) ?? 0
-            if size == 0 {
+            let writerCompleted = writerStatus == .completed && writerError == nil && receivedFrames && size > 0
+            if !writerCompleted {
                 try? FileManager.default.removeItem(at: url)
                 if let writerError {
                     errorMessage = "Recording failed: \(writerError.localizedDescription)"
@@ -191,10 +226,14 @@ class CaptureEngine: NSObject, ObservableObject {
             }
         }
 
+        if let stopCaptureWarning {
+            onWarning?(stopCaptureWarning)
+        }
         return url
     }
 
     func cancelRecording() async {
+        recordingGeneration = nil
         stopDurationTimer()
         audioManager.stopMicrophoneCapture()
 
@@ -211,6 +250,26 @@ class CaptureEngine: NSObject, ObservableObject {
         }
 
         cleanup()
+    }
+
+    private func handleUnexpectedStreamStop(message: String, generation: UUID) async {
+        guard recordingGeneration == generation, state.isActive else { return }
+        recordingGeneration = nil
+        state = .stopping
+        stopDurationTimer()
+        audioManager.stopMicrophoneCapture()
+
+        stream = nil
+        streamOutput?.bufferWriter.cancelWriting()
+        streamOutput = nil
+        if let outputURL, FileManager.default.fileExists(atPath: outputURL.path) {
+            try? FileManager.default.removeItem(at: outputURL)
+        }
+
+        let reportedError = "Recording stopped: \(message)"
+        cleanup()
+        errorMessage = reportedError
+        onStreamError?(reportedError)
     }
 
     // MARK: - Private Helpers
@@ -347,6 +406,7 @@ class CaptureEngine: NSObject, ObservableObject {
     }
 
     private func cleanup() {
+        recordingGeneration = nil
         state = .idle
         recordingDuration = 0
         recordingStartDate = nil
@@ -359,7 +419,8 @@ class CaptureEngine: NSObject, ObservableObject {
 class BufferWriter: @unchecked Sendable {
     private let assetWriter: AVAssetWriter
     private let videoInput: AVAssetWriterInput
-    private let audioInput: AVAssetWriterInput?
+    private let systemAudioInput: AVAssetWriterInput?
+    private let microphoneInput: AVAssetWriterInput?
     private let lock = NSLock()
     private var sessionStarted = false
     private var isFinished = false
@@ -382,11 +443,18 @@ class BufferWriter: @unchecked Sendable {
     }
 
     var writerError: Error? { assetWriter.error }
+    var writerStatus: AVAssetWriter.Status { assetWriter.status }
 
-    init(assetWriter: AVAssetWriter, videoInput: AVAssetWriterInput, audioInput: AVAssetWriterInput?) {
+    init(
+        assetWriter: AVAssetWriter,
+        videoInput: AVAssetWriterInput,
+        systemAudioInput: AVAssetWriterInput?,
+        microphoneInput: AVAssetWriterInput?
+    ) {
         self.assetWriter = assetWriter
         self.videoInput = videoInput
-        self.audioInput = audioInput
+        self.systemAudioInput = systemAudioInput
+        self.microphoneInput = microphoneInput
     }
 
     func appendVideo(_ sampleBuffer: CMSampleBuffer) {
@@ -415,8 +483,9 @@ class BufferWriter: @unchecked Sendable {
             poolHeight = height
         }
 
+        guard let pixelBufferPool else { return }
         var dstPixelBuffer: CVPixelBuffer?
-        guard CVPixelBufferPoolCreatePixelBuffer(nil, pixelBufferPool!, &dstPixelBuffer) == kCVReturnSuccess,
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, pixelBufferPool, &dstPixelBuffer) == kCVReturnSuccess,
               let dstPixelBuffer else { return }
 
         if let cs = CGColorSpace(name: CGColorSpace.sRGB) {
@@ -466,30 +535,46 @@ class BufferWriter: @unchecked Sendable {
         ) == noErr, let newSampleBuffer else { return }
 
         if !sessionStarted {
-            assetWriter.startWriting()
+            guard assetWriter.startWriting() else { return }
             let pts = CMSampleBufferGetPresentationTimeStamp(newSampleBuffer)
             assetWriter.startSession(atSourceTime: pts)
             sessionStarted = true
         }
 
         guard videoInput.isReadyForMoreMediaData else { return }
-        videoInput.append(newSampleBuffer)
+        if !videoInput.append(newSampleBuffer) {
+            isFinished = true
+        }
     }
 
-    func appendAudio(_ sampleBuffer: CMSampleBuffer) {
+    func appendSystemAudio(_ sampleBuffer: CMSampleBuffer) {
+        appendAudio(sampleBuffer, to: systemAudioInput)
+    }
+
+    func appendMicrophone(_ sampleBuffer: CMSampleBuffer) {
+        appendAudio(sampleBuffer, to: microphoneInput)
+    }
+
+    private func appendAudio(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) {
         lock.lock()
         defer { lock.unlock() }
 
         guard !isFinished, sessionStarted, assetWriter.status != .failed else { return }
-        guard let audioInput = audioInput, audioInput.isReadyForMoreMediaData else { return }
-        audioInput.append(sampleBuffer)
+        guard let input, input.isReadyForMoreMediaData else { return }
+        if !input.append(sampleBuffer) {
+            isFinished = true
+        }
     }
 
     func finishWriting() async {
-        guard markFinishedIfReady() else { return }
+        guard markFinishedIfReady() else {
+            cancelWriting()
+            return
+        }
 
         videoInput.markAsFinished()
-        audioInput?.markAsFinished()
+        systemAudioInput?.markAsFinished()
+        microphoneInput?.markAsFinished()
 
         if assetWriter.status == .writing {
             await assetWriter.finishWriting()
@@ -528,11 +613,12 @@ class CaptureStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
 
         switch type {
         case .screen:
+            guard Self.isCompleteFrame(sampleBuffer) else { return }
             bufferWriter.appendVideo(sampleBuffer)
         case .audio:
-            bufferWriter.appendAudio(sampleBuffer)
+            bufferWriter.appendSystemAudio(sampleBuffer)
         case .microphone:
-            bufferWriter.appendAudio(sampleBuffer)
+            bufferWriter.appendMicrophone(sampleBuffer)
         @unknown default:
             break
         }
@@ -541,6 +627,18 @@ class CaptureStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         let message = error.localizedDescription
         onStreamError?(message)
+    }
+
+    private static func isCompleteFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: false
+        ) as? [[SCStreamFrameInfo: Any]],
+        let rawStatus = attachments.first?[.status] as? Int,
+        let status = SCFrameStatus(rawValue: rawStatus) else {
+            return false
+        }
+        return status == .complete
     }
 }
 

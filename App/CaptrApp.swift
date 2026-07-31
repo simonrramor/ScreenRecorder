@@ -34,9 +34,11 @@ struct CaptrApp: App {
     }
 }
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     var keyboardShortcutManager: KeyboardShortcutManager?
     private var hasSetupShortcuts = false
+    private weak var appState: AppState?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -60,6 +62,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func setupKeyboardShortcuts(appState: AppState) {
         guard !hasSetupShortcuts else { return }
         hasSetupShortcuts = true
+        self.appState = appState
         let manager = KeyboardShortcutManager(appState: appState)
         keyboardShortcutManager = manager
         appState.keyboardShortcutManager = manager
@@ -68,5 +71,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         keyboardShortcutManager?.unregisterShortcuts()
+        appState?.shutdown()
     }
 }

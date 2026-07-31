@@ -72,7 +72,9 @@ jobs:
     timeout-minutes: 90
 
     env:
-      SPARKLE_VERSION: "2.6.0"
+      # Keep this identical to project.yml's exact Sparkle package version so
+      # the app and sign_update tool use the same release.
+      SPARKLE_VERSION: "2.9.1"
       TEAM_ID: "D89WR7924X"
 
     steps:
@@ -135,6 +137,19 @@ jobs:
       - name: Generate Xcode project
         if: env.SKIP_RELEASE == 'false'
         run: xcodegen generate
+
+      - name: Run tests
+        if: env.SKIP_RELEASE == 'false'
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project Captr.xcodeproj \
+            -scheme Captr \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Import Developer ID certificate
         if: env.SKIP_RELEASE == 'false'
@@ -214,11 +229,18 @@ jobs:
           ZIP_PATH="build/Captr-notarize.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
 
-          xcrun notarytool submit "$ZIP_PATH" \
+          NOTARY_RESULT=$(xcrun notarytool submit "$ZIP_PATH" \
             --key "$KEY_PATH" \
             --key-id "$NOTARY_KEY_ID" \
             --issuer "$NOTARY_ISSUER_ID" \
-            --wait
+            --wait \
+            --output-format json)
+          echo "$NOTARY_RESULT"
+          SUBMISSION_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<< "$NOTARY_RESULT")
+          xcrun notarytool log "$SUBMISSION_ID" \
+            --key "$KEY_PATH" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID"
 
           xcrun stapler staple "$APP_PATH"
           xcrun stapler validate "$APP_PATH"
@@ -257,16 +279,31 @@ jobs:
           KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
           echo "$NOTARY_API_KEY_B64" | base64 --decode > "$KEY_PATH"
 
-          xcrun notarytool submit Captr.dmg \
+          NOTARY_RESULT=$(xcrun notarytool submit Captr.dmg \
             --key "$KEY_PATH" \
             --key-id "$NOTARY_KEY_ID" \
             --issuer "$NOTARY_ISSUER_ID" \
-            --wait
+            --wait \
+            --output-format json)
+          echo "$NOTARY_RESULT"
+          SUBMISSION_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<< "$NOTARY_RESULT")
+          xcrun notarytool log "$SUBMISSION_ID" \
+            --key "$KEY_PATH" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID"
 
           xcrun stapler staple Captr.dmg
           xcrun stapler validate Captr.dmg
 
           rm -f "$KEY_PATH"
+
+      - name: Package debug symbols
+        if: env.SKIP_RELEASE == 'false'
+        run: |
+          set -euo pipefail
+          test -d build/Captr.xcarchive/dSYMs
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/Captr.xcarchive/dSYMs Captr-dSYMs.zip
 
       - name: Sign DMG with Sparkle EdDSA key
         if: env.SKIP_RELEASE == 'false'
@@ -318,7 +355,8 @@ jobs:
           export RELEASE_NOTES
 
           python3 <<'PY'
-          import os, re
+          import html, os, re
+          from xml.sax.saxutils import escape as xml_escape
 
           version = os.environ["VERSION"]
           build = os.environ["BUILD"]
@@ -332,17 +370,23 @@ jobs:
           # (the convention used by previous releases); otherwise inline as <p>.
           lines = [ln.strip() for ln in notes.splitlines() if ln.strip()]
           if lines and all(ln.startswith(("- ", "* ")) for ln in lines):
-              items = "\n".join(f"                    <li>{ln[2:].strip()}</li>" for ln in lines)
+              items = "\n".join(
+                  f"                    <li>{html.escape(ln[2:].strip())}</li>"
+                  for ln in lines
+              )
               notes_html = f"\n                <ul>\n{items}\n                </ul>\n            "
           else:
-              notes_html = f"\n                <p>{notes}</p>\n            "
+              paragraphs = "</p>\n                <p>".join(
+                  html.escape(line) for line in lines
+              ) or "New release"
+              notes_html = f"\n                <p>{paragraphs}</p>\n            "
 
           repo = os.environ["GITHUB_REPOSITORY"]
           dmg_url = f"https://github.com/{repo}/releases/download/{tag}/Captr.dmg"
 
           new_item = (
               "        <item>\n"
-              f"            <title>Version {version}</title>\n"
+              f"            <title>Version {xml_escape(version)}</title>\n"
               f"            <description><![CDATA[{notes_html}]]></description>\n"
               f"            <pubDate>{pubdate}</pubDate>\n"
               f'            <enclosure url="{dmg_url}"\n'
@@ -358,13 +402,21 @@ jobs:
           with open("appcast.xml", "r", encoding="utf-8") as f:
               xml = f.read()
 
-          replaced, count = re.subn(
-              r"([ \t]*)<item>",
-              lambda m: new_item + m.group(0),
-              xml,
-              count=1,
+          # A failed workflow may already have committed this version before
+          # creating its tag. Replace that exact item on retry instead of
+          # duplicating it; otherwise prepend the new release.
+          item_matches = list(re.finditer(r"[ \t]*<item>.*?</item>\s*", xml, re.DOTALL))
+          existing = next(
+              (match for match in item_matches
+               if f'sparkle:version="{build}"' in match.group(0)),
+              None,
           )
-          if count == 0:
+          if existing:
+              replaced = xml[:existing.start()] + new_item + xml[existing.end():]
+          elif item_matches:
+              anchor = item_matches[0].start()
+              replaced = xml[:anchor] + new_item + xml[anchor:]
+          else:
               raise SystemExit("Could not find <item> anchor in appcast.xml")
 
           with open("appcast.xml", "w", encoding="utf-8") as f:
@@ -381,6 +433,7 @@ jobs:
           ARTIFACTS_DIR="$RUNNER_TEMP/release-artifacts"
           mkdir -p "$ARTIFACTS_DIR"
           cp Captr.dmg "$ARTIFACTS_DIR/"
+          cp Captr-dSYMs.zip "$ARTIFACTS_DIR/"
           cp appcast.xml "$ARTIFACTS_DIR/"
 
           git reset --hard HEAD
@@ -395,13 +448,19 @@ jobs:
           git add Captr.dmg appcast.xml
           git commit -m "Release v${PLIST_VERSION} (build ${PLIST_BUILD})"
 
+          pushed=false
           for delay in 2 4 8 16; do
             if git push origin main; then
+              pushed=true
               break
             fi
             echo "Push failed, retrying in ${delay}s…"
             sleep "$delay"
           done
+          if [ "$pushed" != true ]; then
+            echo "::error::Could not push the release commit to main after all retries"
+            exit 1
+          fi
 
       - name: Publish appcast.xml to gh-pages
         if: env.SKIP_RELEASE == 'false'
@@ -418,13 +477,19 @@ jobs:
           git add appcast.xml
           git commit -m "Publish v${PLIST_VERSION} to appcast"
 
+          pushed=false
           for delay in 2 4 8 16; do
             if git push origin gh-pages; then
+              pushed=true
               break
             fi
             echo "Push failed, retrying in ${delay}s…"
             sleep "$delay"
           done
+          if [ "$pushed" != true ]; then
+            echo "::error::Could not publish appcast.xml after all retries"
+            exit 1
+          fi
 
       - name: Restore DMG for upload
         if: env.SKIP_RELEASE == 'false'
@@ -435,6 +500,7 @@ jobs:
           # the actual artifact back so the release upload gets the right
           # file with the matching Sparkle signature.
           cp "$RUNNER_TEMP/release-artifacts/Captr.dmg" Captr.dmg
+          cp "$RUNNER_TEMP/release-artifacts/Captr-dSYMs.zip" Captr-dSYMs.zip
 
       - name: Create tag and GitHub Release
         if: env.SKIP_RELEASE == 'false'
@@ -444,7 +510,9 @@ jobs:
           target_commitish: main
           name: Captr ${{ env.PLIST_VERSION }}
           body: ${{ env.RELEASE_NOTES }}
-          files: Captr.dmg
+          files: |
+            Captr.dmg
+            Captr-dSYMs.zip
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

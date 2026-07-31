@@ -34,7 +34,22 @@ struct FileSizeFormatter {
 extension Date {
     var screenRecorderFileName: String {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
         return formatter.string(from: self)
+    }
+}
+
+enum CaptureFileURL {
+    static func unique(
+        in directory: URL,
+        prefix: String,
+        pathExtension: String,
+        date: Date = .now,
+        id: UUID = UUID()
+    ) -> URL {
+        let suffix = id.uuidString.prefix(8).lowercased()
+        let fileName = "\(prefix) \(date.screenRecorderFileName) \(suffix).\(pathExtension)"
+        return directory.appendingPathComponent(fileName)
     }
 }

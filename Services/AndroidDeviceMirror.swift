@@ -3,16 +3,11 @@ import AppKit
 import SwiftUI
 
 // Continuous frame grabber using ADB screencap
-class AndroidFrameGrabber: @unchecked Sendable {
+@MainActor
+final class AndroidFrameGrabber {
     private let adbPath: String
     private let serial: String
-    private let lock = NSLock()
-    private var _isRunning = false
-
-    private var isRunning: Bool {
-        get { lock.withLock { _isRunning } }
-        set { lock.withLock { _isRunning = newValue } }
-    }
+    private var captureTask: Task<Void, Never>?
 
     // Delivers raw PNG data; image creation must happen on the main thread
     var onFrameData: ((Data) -> Void)?
@@ -23,63 +18,53 @@ class AndroidFrameGrabber: @unchecked Sendable {
     }
 
     func start() {
-        isRunning = true
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+        guard captureTask == nil else { return }
+        let adbPath = adbPath
+        let serial = serial
+        captureTask = Task { [weak self] in
             // Cap the screencap fallback at ~10 fps; an unthrottled loop of
             // adb launches pins a core for no visible benefit.
-            let minFrameInterval: TimeInterval = 0.1
-            while self?.isRunning == true {
-                let start = CFAbsoluteTimeGetCurrent()
-                self?.captureFrame()
-                let elapsed = CFAbsoluteTimeGetCurrent() - start
-                if elapsed < minFrameInterval {
-                    Thread.sleep(forTimeInterval: minFrameInterval - elapsed)
+            while !Task.isCancelled {
+                let start = ContinuousClock.now
+                if let data = await Self.captureFrame(adbPath: adbPath, serial: serial),
+                   !Task.isCancelled {
+                    self?.onFrameData?(data)
+                }
+
+                let elapsed = start.duration(to: .now)
+                let remaining = Duration.milliseconds(100) - elapsed
+                if remaining > .zero {
+                    try? await Task.sleep(for: remaining)
                 }
             }
         }
     }
 
     func stop() {
-        isRunning = false
+        captureTask?.cancel()
+        captureTask = nil
     }
 
-    private func captureFrame() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: adbPath)
-        process.arguments = ["-s", serial, "exec-out", "screencap", "-p"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        var allData = Data()
-        let fileHandle = pipe.fileHandleForReading
-
-        do {
-            try process.run()
-        } catch {
-            return
+    @concurrent
+    private static func captureFrame(adbPath: String, serial: String) async -> Data? {
+        guard let result = try? await ProcessRunner.run(
+            adbPath,
+            arguments: ["-s", serial, "exec-out", "screencap", "-p"],
+            timeout: 3
+        ), result.succeeded, result.standardOutputData.count > 100 else {
+            return nil
         }
-
-        // Read data in chunks to prevent pipe buffer from blocking the process
-        while true {
-            let chunk = fileHandle.availableData
-            if chunk.isEmpty { break }
-            allData.append(chunk)
-        }
-
-        process.waitUntilExit()
-
-        guard allData.count > 100 else { return }
-
-        onFrameData?(allData)
+        return result.standardOutputData
     }
 }
 
 // Input forwarding via ADB shell input
-class AndroidInputHandler: @unchecked Sendable {
+@MainActor
+final class AndroidInputHandler {
     private let adbPath: String
     private let serial: String
+    private var pendingCommands: [[String]] = []
+    private var workerTask: Task<Void, Never>?
 
     init(adbPath: String, serial: String) {
         self.adbPath = adbPath
@@ -89,7 +74,7 @@ class AndroidInputHandler: @unchecked Sendable {
     func tap(viewPoint: CGPoint, viewSize: CGSize, deviceSize: CGSize) {
         let x = Int(viewPoint.x / viewSize.width * deviceSize.width)
         let y = Int(viewPoint.y / viewSize.height * deviceSize.height)
-        runAdb("shell", "input", "tap", "\(x)", "\(y)")
+        enqueue(["shell", "input", "tap", "\(x)", "\(y)"])
     }
 
     func swipe(from: CGPoint, to: CGPoint, viewSize: CGSize, deviceSize: CGSize, duration: Int = 300) {
@@ -97,22 +82,22 @@ class AndroidInputHandler: @unchecked Sendable {
         let y1 = Int(from.y / viewSize.height * deviceSize.height)
         let x2 = Int(to.x / viewSize.width * deviceSize.width)
         let y2 = Int(to.y / viewSize.height * deviceSize.height)
-        runAdb("shell", "input", "swipe", "\(x1)", "\(y1)", "\(x2)", "\(y2)", "\(duration)")
+        enqueue(["shell", "input", "swipe", "\(x1)", "\(y1)", "\(x2)", "\(y2)", "\(duration)"])
     }
 
     func keyEvent(_ code: Int) {
-        runAdb("shell", "input", "keyevent", "\(code)")
+        enqueue(["shell", "input", "keyevent", "\(code)"])
     }
 
     func text(_ text: String) {
-        runAdb("shell", "input", "text", Self.escapedInputText(text))
+        enqueue(["shell", "input", "text", Self.escapedInputText(text)])
     }
 
     /// Escapes a string for `adb shell input text`, which runs through the
     /// device shell: spaces map to %s and shell metacharacters must be
     /// backslash-escaped or they get eaten (or worse, interpreted) on the
     /// device side.
-    static func escapedInputText(_ text: String) -> String {
+    nonisolated static func escapedInputText(_ text: String) -> String {
         var escaped = ""
         for character in text {
             switch character {
@@ -127,15 +112,32 @@ class AndroidInputHandler: @unchecked Sendable {
         return escaped
     }
 
-    private func runAdb(_ args: String...) {
-        DispatchQueue.global().async { [self] in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: self.adbPath)
-            process.arguments = ["-s", self.serial] + args
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            try? process.run()
-            process.waitUntilExit()
+    func stop() {
+        workerTask?.cancel()
+        workerTask = nil
+        pendingCommands.removeAll()
+    }
+
+    private func enqueue(_ arguments: [String]) {
+        // Bound the queue so a disconnected or slow device cannot turn rapid
+        // input into an unbounded number of adb processes.
+        if pendingCommands.count >= 32 {
+            pendingCommands.removeFirst()
+        }
+        pendingCommands.append(arguments)
+        guard workerTask == nil else { return }
+
+        workerTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, !self.pendingCommands.isEmpty {
+                let arguments = self.pendingCommands.removeFirst()
+                _ = try? await ProcessRunner.run(
+                    self.adbPath,
+                    arguments: ["-s", self.serial] + arguments,
+                    timeout: 3
+                )
+            }
+            self.workerTask = nil
         }
     }
 }
@@ -144,6 +146,7 @@ class AndroidInputHandler: @unchecked Sendable {
 class AndroidDeviceMirror: ObservableObject {
     @Published var isMirroring = false
     @Published var isRecording = false
+    @Published private(set) var isFinalizingRecording = false
     @Published var recordingDuration: TimeInterval = 0
     @Published var currentFrame: NSImage?
     @Published var errorMessage: String?
@@ -159,10 +162,14 @@ class AndroidDeviceMirror: ObservableObject {
     private var frameGrabber: AndroidFrameGrabber?
     private(set) var inputHandler: AndroidInputHandler?
     private var recordingProcess: Process?
+    private var recordingRemotePath: String?
+    private var recordingFinalizationTask: Task<URL?, Never>?
     private var deviceSerial: String?
     private var durationTimer: Timer?
     private var recordingStartDate: Date?
     private var mirroringDevice: ConnectedDevice?
+    private var mirroringStartupTask: Task<Void, Never>?
+    private var mirroringGeneration: UUID?
 
     init(adbPath: String) {
         self.adbPath = adbPath
@@ -181,17 +188,25 @@ class AndroidDeviceMirror: ObservableObject {
     /// In-app screencap mirroring backed by ADB. This intentionally stays
     /// inside Captr instead of launching scrcpy as a separate viewer.
     private func startScreencapMirroring(serial: String) {
+        let generation = UUID()
+        mirroringGeneration = generation
+        currentFrame = nil
+        isMirroring = true
+
         // Fetch device resolution
-        Task.detached { [weak self] in
-            guard let self = self else { return }
-            let output = DeviceManager.runCommand(self.adbPath, arguments: ["-s", serial, "shell", "wm", "size"])
+        Task { [weak self] in
+            guard let self else { return }
+            let output = (try? await ProcessRunner.run(
+                self.adbPath,
+                arguments: ["-s", serial, "shell", "wm", "size"],
+                timeout: 3
+            ))?.standardOutput ?? ""
             if let match = output.range(of: #"\d+x\d+"#, options: .regularExpression) {
                 let sizeStr = String(output[match])
                 let parts = sizeStr.split(separator: "x")
                 if parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]) {
-                    await MainActor.run { [weak self] in
-                        self?.deviceResolution = CGSize(width: w, height: h)
-                    }
+                    guard self.mirroringGeneration == generation else { return }
+                    self.deviceResolution = CGSize(width: w, height: h)
                 }
             }
         }
@@ -200,11 +215,11 @@ class AndroidDeviceMirror: ObservableObject {
         // cross-thread retain/release issues with Core Animation layers
         let grabber = AndroidFrameGrabber(adbPath: adbPath, serial: serial)
         grabber.onFrameData = { [weak self] data in
-            Task { @MainActor [weak self] in
-                guard let self = self, self.isMirroring else { return }
-                if let image = NSImage(data: data) {
-                    self.currentFrame = image
-                }
+            guard let self, self.isMirroring, self.mirroringGeneration == generation else { return }
+            if let image = NSImage(data: data) {
+                self.currentFrame = image
+                self.mirroringStartupTask?.cancel()
+                self.mirroringStartupTask = nil
             }
         }
         grabber.start()
@@ -213,19 +228,40 @@ class AndroidDeviceMirror: ObservableObject {
         // Create input handler
         inputHandler = AndroidInputHandler(adbPath: adbPath, serial: serial)
 
-        isMirroring = true
+        mirroringStartupTask?.cancel()
+        mirroringStartupTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(5))
+            } catch {
+                return
+            }
+            guard let self,
+                  self.mirroringGeneration == generation,
+                  self.currentFrame == nil else { return }
+            self.errorMessage = "Android screen did not respond. Check the cable, USB debugging, and the trust prompt."
+            self.finishStoppingMirror()
+        }
     }
 
     func stopMirroring() {
+        if isRecording || isFinalizingRecording {
+            Task { [weak self] in
+                _ = await self?.stopRecording()
+                self?.finishStoppingMirror()
+            }
+            return
+        }
+        finishStoppingMirror()
+    }
+
+    private func finishStoppingMirror() {
+        mirroringGeneration = nil
+        mirroringStartupTask?.cancel()
+        mirroringStartupTask = nil
         frameGrabber?.stop()
         frameGrabber = nil
+        inputHandler?.stop()
         inputHandler = nil
-
-        if isRecording {
-            stopRecordingOnDevice()
-            isRecording = false
-            stopDurationTimer()
-        }
 
         isMirroring = false
         currentFrame = nil
@@ -235,15 +271,17 @@ class AndroidDeviceMirror: ObservableObject {
     }
 
     func startRecording() {
-        guard isMirroring, !isRecording, let serial = deviceSerial else { return }
+        guard isMirroring, !isRecording, !isFinalizingRecording, let serial = deviceSerial else { return }
+
+        let remotePath = "/sdcard/captr-\(UUID().uuidString.lowercased()).mp4"
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: adbPath)
         // No --size: forcing 1280x720 distorts portrait devices. screenrecord
         // picks the native display resolution on its own.
-        process.arguments = ["-s", serial, "shell", "screenrecord", "/sdcard/mirror_recording.mp4"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.arguments = ["-s", serial, "shell", "screenrecord", remotePath]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
 
         process.terminationHandler = { [weak self, weak process] _ in
             Task { @MainActor [weak self, weak process] in
@@ -257,8 +295,9 @@ class AndroidDeviceMirror: ObservableObject {
         do {
             try process.run()
             recordingProcess = process
+            recordingRemotePath = remotePath
             isRecording = true
-            recordingStartDate = Date()
+            recordingStartDate = .now
             startDurationTimer()
         } catch {
             errorMessage = "Failed to start recording: \(error.localizedDescription)"
@@ -266,54 +305,130 @@ class AndroidDeviceMirror: ObservableObject {
     }
 
     func stopRecording() async -> URL? {
-        guard isRecording, let serial = deviceSerial else { return nil }
+        if let recordingFinalizationTask {
+            return await recordingFinalizationTask.value
+        }
+        guard (isRecording || recordingProcess != nil),
+              let serial = deviceSerial,
+              let remotePath = recordingRemotePath else { return nil }
+
         isRecording = false
+        isFinalizingRecording = true
         stopDurationTimer()
 
-        stopRecordingOnDevice()
-
-        // Wait for recording to finalize on device
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-
-        // Pull file from device
-        let outputDir = MediaLibraryManager.recordingsDirectory
-        try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-        let fileName = "Android Device \(Date().screenRecorderFileName).mp4"
-        let localURL = outputDir.appendingPathComponent(fileName)
-
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { [self] in
-                let pullProcess = Process()
-                pullProcess.executableURL = URL(fileURLWithPath: self.adbPath)
-                pullProcess.arguments = ["-s", serial, "pull", "/sdcard/mirror_recording.mp4", localURL.path]
-                pullProcess.standardOutput = Pipe()
-                pullProcess.standardError = Pipe()
-                try? pullProcess.run()
-                pullProcess.waitUntilExit()
-
-                let rmProcess = Process()
-                rmProcess.executableURL = URL(fileURLWithPath: self.adbPath)
-                rmProcess.arguments = ["-s", serial, "shell", "rm", "-f", "/sdcard/mirror_recording.mp4"]
-                rmProcess.standardOutput = Pipe()
-                rmProcess.standardError = Pipe()
-                try? rmProcess.run()
-                rmProcess.waitUntilExit()
-
-                continuation.resume()
-            }
+        let process = recordingProcess
+        let task = Task { [weak self] () -> URL? in
+            guard let self else { return nil }
+            return await self.finalizeRecording(
+                serial: serial,
+                remotePath: remotePath,
+                recordingProcess: process
+            )
         }
+        recordingFinalizationTask = task
+        let localURL = await task.value
+        recordingFinalizationTask = nil
+        recordingProcess = nil
+        recordingRemotePath = nil
+        isFinalizingRecording = false
 
-        guard FileManager.default.fileExists(atPath: localURL.path) else {
-            errorMessage = "Failed to pull the recording from the device."
-            return nil
-        }
         return localURL
     }
 
-    func takeScreenshot() -> NSImage? {
-        if currentFrame == nil {
-            currentFrame = captureScreencapFrame()
+    private func finalizeRecording(
+        serial: String,
+        remotePath: String,
+        recordingProcess: Process?
+    ) async -> URL? {
+        if let recordingProcess {
+            // Signal only the adb process Captr launched. This lets
+            // screenrecord finish its MP4 footer without touching an
+            // unrelated screenrecord process on the device.
+            if recordingProcess.isRunning {
+                recordingProcess.interrupt()
+            }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(6))
+            while recordingProcess.isRunning, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+
+            // Some adb versions do not forward the local interrupt. Use a
+            // device-wide signal only as a last-resort fallback.
+            if recordingProcess.isRunning {
+                _ = try? await ProcessRunner.run(
+                    adbPath,
+                    arguments: ["-s", serial, "shell", "pkill", "-2", "screenrecord"],
+                    timeout: 3
+                )
+                let fallbackDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+                while recordingProcess.isRunning, ContinuousClock.now < fallbackDeadline {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            if recordingProcess.isRunning {
+                recordingProcess.terminate()
+            }
         }
+
+        await waitForStableRemoteFile(serial: serial, remotePath: remotePath)
+
+        let outputDir = MediaLibraryManager.recordingsDirectory
+        do {
+            try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        } catch {
+            errorMessage = "Could not create the recordings folder: \(error.localizedDescription)"
+            return nil
+        }
+        let localURL = CaptureFileURL.unique(in: outputDir, prefix: "Android Device", pathExtension: "mp4")
+
+        guard let pullResult = try? await ProcessRunner.run(
+            adbPath,
+            arguments: ["-s", serial, "pull", remotePath, localURL.path],
+            timeout: 30
+        ), pullResult.succeeded,
+        let size = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size]) as? NSNumber,
+        size.int64Value > 0 else {
+            try? FileManager.default.removeItem(at: localURL)
+            errorMessage = "Failed to pull the recording from the device. The on-device copy was left in place."
+            return nil
+        }
+
+        _ = try? await ProcessRunner.run(
+            adbPath,
+            arguments: ["-s", serial, "shell", "rm", "-f", remotePath],
+            timeout: 5
+        )
+        return localURL
+    }
+
+    private func waitForStableRemoteFile(serial: String, remotePath: String) async {
+        var previousSize: Int64?
+        var stableSamples = 0
+
+        for _ in 0..<20 {
+            guard let result = try? await ProcessRunner.run(
+                adbPath,
+                arguments: ["-s", serial, "shell", "stat", "-c", "%s", remotePath],
+                timeout: 2
+            ), result.succeeded,
+            let size = Int64(result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)),
+            size > 0 else {
+                try? await Task.sleep(for: .milliseconds(250))
+                continue
+            }
+
+            if size == previousSize {
+                stableSamples += 1
+                if stableSamples >= 2 { return }
+            } else {
+                previousSize = size
+                stableSamples = 0
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    func takeScreenshot() -> NSImage? {
         return currentFrame
     }
 
@@ -337,20 +452,6 @@ class AndroidDeviceMirror: ObservableObject {
         inputHandler?.keyEvent(187)
     }
 
-    private func stopRecordingOnDevice() {
-        guard let serial = deviceSerial else { return }
-        DispatchQueue.global().async { [self] in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: self.adbPath)
-            process.arguments = ["-s", serial, "shell", "pkill", "-2", "screenrecord"]
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            try? process.run()
-            process.waitUntilExit()
-        }
-        recordingProcess = nil
-    }
-
     private func startDurationTimer() {
         durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -365,28 +466,6 @@ class AndroidDeviceMirror: ObservableObject {
         durationTimer = nil
         recordingDuration = 0
         recordingStartDate = nil
-    }
-
-    private func captureScreencapFrame() -> NSImage? {
-        guard let serial = deviceSerial else { return nil }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: adbPath)
-        process.arguments = ["-s", serial, "exec-out", "screencap", "-p"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard data.count > 100 else { return nil }
-            return NSImage(data: data)
-        } catch {
-            return nil
-        }
     }
 
 }

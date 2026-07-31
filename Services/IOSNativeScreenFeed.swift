@@ -207,7 +207,11 @@ final class IOSNativeScreenFeed: NSObject, AVCaptureVideoDataOutputSampleBufferD
     /// briefly. Prefers a name match, then any muxed (screen) device.
     private static func findScreenDevice(preferredDeviceName: String) -> AVCaptureDevice? {
         for _ in 0..<25 {
-            let devices = AVCaptureDevice.devices(for: .muxed)
+            let devices = AVCaptureDevice.DiscoverySession(
+                deviceTypes: [.external],
+                mediaType: .muxed,
+                position: .unspecified
+            ).devices
             if let exact = devices.first(where: { device in
                 device.localizedName.localizedCaseInsensitiveContains(preferredDeviceName)
                     || preferredDeviceName.localizedCaseInsensitiveContains(device.localizedName)

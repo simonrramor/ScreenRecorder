@@ -2,21 +2,20 @@ import Foundation
 import AVFoundation
 import CoreMedia
 
-class AudioManager: NSObject {
+/// All mutable capture state and delegate delivery are serialized on
+/// `sessionQueue`; the unchecked conformance documents that invariant for
+/// AVFoundation's pre-concurrency delegate APIs.
+final class AudioManager: NSObject, @unchecked Sendable {
     private var captureSession: AVCaptureSession?
     private var audioOutput: AVCaptureAudioDataOutput?
-    private var bufferHandler: ((CMSampleBuffer) -> Void)?
+    private var bufferHandler: (@Sendable (CMSampleBuffer) -> Void)?
     private let sessionQueue = DispatchQueue(label: "com.screenrecorder.audio")
 
     /// Called on the session queue when microphone capture cannot start, so
     /// the recording UI can tell the user instead of failing silently.
-    var onError: ((String) -> Void)?
+    var onError: (@Sendable (String) -> Void)?
 
-    var isMicrophoneActive: Bool {
-        captureSession?.isRunning ?? false
-    }
-
-    func startMicrophoneCapture(handler: @escaping (CMSampleBuffer) -> Void) {
+    func startMicrophoneCapture(handler: @escaping @Sendable (CMSampleBuffer) -> Void) {
         bufferHandler = handler
 
         sessionQueue.async { [weak self] in

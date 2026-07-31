@@ -329,6 +329,7 @@ struct MenuBarButton: View {
     }
 }
 
+@MainActor
 final class CheckForUpdatesViewModel: ObservableObject {
     @Published var canCheckForUpdates = false
     private let updater: SPUUpdater

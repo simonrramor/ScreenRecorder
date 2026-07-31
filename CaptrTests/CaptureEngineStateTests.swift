@@ -10,9 +10,9 @@ final class CaptureEngineStateTests: XCTestCase {
         XCTAssertFalse(state.isActive)
     }
 
-    func testPreparing_isNotActive() {
+    func testPreparing_isActive() {
         let state = RecordingState.preparing
-        XCTAssertFalse(state.isActive)
+        XCTAssertTrue(state.isActive)
     }
 
     func testRecording_isActive() {
@@ -25,14 +25,14 @@ final class CaptureEngineStateTests: XCTestCase {
         XCTAssertTrue(state.isActive)
     }
 
-    func testStopping_isNotActive() {
+    func testStopping_isActive() {
         let state = RecordingState.stopping
-        XCTAssertFalse(state.isActive)
+        XCTAssertTrue(state.isActive)
     }
 
-    func testCountdown_isNotActive() {
+    func testCountdown_isActive() {
         let state = RecordingState.countdown(3)
-        XCTAssertFalse(state.isActive)
+        XCTAssertTrue(state.isActive)
     }
 
     // MARK: - CaptureEngine initial state

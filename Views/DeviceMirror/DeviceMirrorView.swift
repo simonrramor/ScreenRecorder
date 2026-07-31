@@ -25,12 +25,12 @@ struct DeviceMirrorView: View {
     }
 
     private func disconnectDevice(_ device: ConnectedDevice) {
-        if device.platform == .iOS {
-            appState.iosDeviceMirror.stopMirroring()
-            appState.iosMirrorWindow.closeWindow()
-        } else if device.platform == .android {
-            appState.androidDeviceMirror?.stopMirroring()
-            appState.androidMirrorWindow.closeWindow()
+        Task {
+            if device.platform == .iOS {
+                await appState.disconnectIOSMirror()
+            } else if device.platform == .android {
+                await appState.disconnectAndroidMirror()
+            }
         }
     }
 

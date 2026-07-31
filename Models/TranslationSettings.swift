@@ -56,6 +56,9 @@ enum ClaudeModel: String, Codable, CaseIterable, Identifiable {
 
 @MainActor
 final class TranslationSettings: ObservableObject {
+    @Published private var storedClaudeAPIKey: String?
+    @Published private(set) var keychainError: String?
+
     @Published var engine: TranslationEngine {
         didSet { UserDefaults.standard.set(engine.rawValue, forKey: Keys.engine) }
     }
@@ -68,7 +71,7 @@ final class TranslationSettings: ObservableObject {
     /// is fired manually so SwiftUI pickers re-evaluate when the key status
     /// changes (empty ↔ present gates the Claude option).
     var claudeAPIKey: String? {
-        TranslationKeychain.load()
+        storedClaudeAPIKey
     }
 
     var hasClaudeAPIKey: Bool {
@@ -78,15 +81,29 @@ final class TranslationSettings: ObservableObject {
 
     func setClaudeAPIKey(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            TranslationKeychain.delete()
-        } else {
-            TranslationKeychain.save(trimmed)
+        do {
+            if trimmed.isEmpty {
+                try TranslationKeychain.delete()
+                storedClaudeAPIKey = nil
+            } else {
+                try TranslationKeychain.save(trimmed)
+                storedClaudeAPIKey = trimmed
+            }
+            keychainError = nil
+        } catch {
+            keychainError = error.localizedDescription
         }
-        objectWillChange.send()
     }
 
     init() {
+        do {
+            self.storedClaudeAPIKey = try TranslationKeychain.load()
+            self.keychainError = nil
+        } catch {
+            self.storedClaudeAPIKey = nil
+            self.keychainError = error.localizedDescription
+        }
+
         let rawEngine = UserDefaults.standard.string(forKey: Keys.engine) ?? ""
         self.engine = TranslationEngine(rawValue: rawEngine) ?? .apple
 

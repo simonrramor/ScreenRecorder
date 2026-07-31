@@ -1,6 +1,5 @@
 import AppKit
 import CoreGraphics
-import Vision
 
 /// A single recognized text segment from Vision, enriched with everything the
 /// in-place translation pipeline needs to redraw it. Decouples downstream
@@ -29,10 +28,9 @@ struct VisionTextBlock {
 
     /// Builds a block from a Vision observation plus the image dimensions,
     /// converting from normalized bottom-left coords to pixel top-left.
-    init?(observation: VNRecognizedTextObservation, imageWidth: Int, imageHeight: Int) {
-        guard let candidate = observation.topCandidates(1).first?.string,
-              !candidate.isEmpty else { return nil }
-        let bb = observation.boundingBox
+    init?(region: RecognizedTextRegion, imageWidth: Int, imageHeight: Int) {
+        guard !region.text.isEmpty else { return nil }
+        let bb = region.boundingBox
         let w = CGFloat(imageWidth)
         let h = CGFloat(imageHeight)
         self.pixelRect = CGRect(
@@ -41,6 +39,6 @@ struct VisionTextBlock {
             width: bb.width * w,
             height: bb.height * h
         )
-        self.originalText = candidate
+        self.originalText = region.text
     }
 }

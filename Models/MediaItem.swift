@@ -2,7 +2,9 @@ import Foundation
 import AppKit
 
 struct MediaItem: Identifiable, Hashable {
-    let id: UUID
+    /// The standardized file path is stable across library reloads, unlike a
+    /// freshly generated UUID which made SwiftUI treat every item as new.
+    let id: String
     let url: URL
     let type: MediaType
     let createdAt: Date
@@ -10,7 +12,7 @@ struct MediaItem: Identifiable, Hashable {
     var duration: TimeInterval?
     var thumbnail: NSImage?
 
-    enum MediaType: String, CaseIterable, Identifiable {
+    enum MediaType: String, CaseIterable, Identifiable, Sendable {
         case recording = "Recording"
         case screenshot = "Screenshot"
 

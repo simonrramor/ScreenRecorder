@@ -486,6 +486,13 @@ struct TranslationSettingsSection: View {
                         Link("Get a key", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
                             .font(.system(size: 11))
                     }
+
+                    if let keychainError = settings.keychainError {
+                        Text(keychainError)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 Picker(selection: $settings.claudeModel) {

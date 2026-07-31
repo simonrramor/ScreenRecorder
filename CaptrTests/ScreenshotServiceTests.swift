@@ -6,8 +6,10 @@ final class ScreenshotServiceTests: XCTestCase {
 
     // MARK: - errorMessage cleared on success
 
-    func testCaptureArea_clearsStaleErrorBeforeReportingFailure() async {
-        let service = ScreenshotService()
+    func testCaptureArea_clearsStaleErrorBeforeReportingFailure() async throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let service = ScreenshotService(screenshotsDirectory: temporaryDirectory)
         service.errorMessage = "stale error from previous capture"
 
         // Even when capture fails early, it should clear stale errors before
@@ -23,8 +25,10 @@ final class ScreenshotServiceTests: XCTestCase {
 
     // MARK: - errorMessage set on nil display
 
-    func testCaptureFullScreen_nilDisplay_setsError() async {
-        let service = ScreenshotService()
+    func testCaptureFullScreen_nilDisplay_setsError() async throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let service = ScreenshotService(screenshotsDirectory: temporaryDirectory)
         let image = await service.captureFullScreen(display: nil)
         XCTAssertNil(image)
         XCTAssertNotNil(service.errorMessage)
@@ -34,8 +38,10 @@ final class ScreenshotServiceTests: XCTestCase {
 
     // MARK: - saveScreenshot with valid image
 
-    func testSaveScreenshot_producesFile() {
-        let service = ScreenshotService()
+    func testSaveScreenshot_producesFile() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let service = ScreenshotService(screenshotsDirectory: temporaryDirectory)
         let image = NSImage(size: NSSize(width: 50, height: 50))
         image.lockFocus()
         NSColor.green.drawSwatch(in: NSRect(x: 0, y: 0, width: 50, height: 50))
@@ -45,17 +51,18 @@ final class ScreenshotServiceTests: XCTestCase {
         XCTAssertNotNil(url, "saveScreenshot should return a URL")
         XCTAssertNil(service.errorMessage, "No error expected on success")
 
-        if let url = url {
+        if let url {
             XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
-            // Clean up
-            try? FileManager.default.removeItem(at: url)
+            XCTAssertTrue(url.path.hasPrefix(temporaryDirectory.path))
         }
     }
 
     // MARK: - saveScreenshot clears stale error
 
-    func testSaveScreenshot_clearsStaleError() {
-        let service = ScreenshotService()
+    func testSaveScreenshot_clearsStaleError() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let service = ScreenshotService(screenshotsDirectory: temporaryDirectory)
         service.errorMessage = "old error"
 
         let image = NSImage(size: NSSize(width: 10, height: 10))
@@ -63,16 +70,12 @@ final class ScreenshotServiceTests: XCTestCase {
         NSColor.white.drawSwatch(in: NSRect(origin: .zero, size: image.size))
         image.unlockFocus()
 
-        let _ = service.saveScreenshot(image)
+        let savedURL = service.saveScreenshot(image)
         XCTAssertNotEqual(service.errorMessage, "old error",
                           "saveScreenshot should clear stale errorMessage")
 
-        // Clean up any saved file
-        let dir = MediaLibraryManager.screenshotsDirectory
-        if let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
-            for file in files where file.lastPathComponent.contains("Screenshot") {
-                try? FileManager.default.removeItem(at: file)
-            }
+        if let savedURL {
+            XCTAssertTrue(savedURL.path.hasPrefix(temporaryDirectory.path))
         }
     }
 
@@ -135,5 +138,12 @@ final class ScreenshotServiceTests: XCTestCase {
         // Transient Dock overlays live at positive non-bar levels.
         XCTAssertFalse(ScreenshotService.shouldExceptDockWindow(layer: 101, dockAutoHides: true, dockLevel: dockLevel))
         XCTAssertFalse(ScreenshotService.shouldExceptDockWindow(layer: 101, dockAutoHides: false, dockLevel: dockLevel))
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CaptrScreenshotTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 }

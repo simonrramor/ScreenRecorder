@@ -20,12 +20,13 @@ final class TranslationOverlayController {
     private var onRetryAction: (() -> Void)?
     private var onSaveAction: (() -> Void)?
     private var onCopyAction: (() -> Void)?
+    private var onCloseAction: (() -> Void)?
 
     /// Opens the overlay in the loading state at the given screen area.
     /// `area` uses CG global coordinates (top-left origin, main-screen basis),
     /// matching what `AreaSelectionWindowController` emits.
     func showLoading(area: CGRect, initialImage: NSImage, engineName: String?) {
-        close()
+        close(notify: false)
 
         let s = TranslationOverlayState(image: initialImage)
         s.engineName = engineName
@@ -92,7 +93,12 @@ final class TranslationOverlayController {
         onCopyAction = action
     }
 
-    func close() {
+    func setCloseAction(_ action: @escaping () -> Void) {
+        onCloseAction = action
+    }
+
+    func close(notify: Bool = true) {
+        let closeAction = notify ? onCloseAction : nil
         removeLocalEventMonitor()
         panel?.orderOut(nil)
         panel?.close()
@@ -102,6 +108,8 @@ final class TranslationOverlayController {
         onRetryAction = nil
         onSaveAction = nil
         onCopyAction = nil
+        onCloseAction = nil
+        closeAction?()
     }
 
     private func position(panel: NSPanel, at area: CGRect) {

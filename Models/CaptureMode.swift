@@ -36,11 +36,15 @@ enum RecordingState: Equatable {
 
     var isActive: Bool {
         switch self {
-        case .recording, .paused:
+        case .preparing, .countdown, .recording, .paused, .stopping:
             return true
-        default:
+        case .idle:
             return false
         }
+    }
+
+    var isCapturing: Bool {
+        self == .recording || self == .paused
     }
 }
 

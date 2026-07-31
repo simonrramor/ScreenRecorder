@@ -1,141 +1,215 @@
 import Foundation
 import AppKit
 import AVFoundation
+import ImageIO
+import UniformTypeIdentifiers
+
+struct MediaLibraryDirectories: Sendable {
+    let recordings: URL
+    let screenshots: URL
+
+    static var live: MediaLibraryDirectories {
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser
+        let movies = fileManager.urls(for: .moviesDirectory, in: .userDomainMask).first
+            ?? home.appendingPathComponent("Movies", isDirectory: true)
+        let downloads = fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? home.appendingPathComponent("Downloads", isDirectory: true)
+        return MediaLibraryDirectories(
+            recordings: downloads,
+            screenshots: movies.appendingPathComponent("Captr/Screenshots", isDirectory: true)
+        )
+    }
+}
+
+private struct MediaDescriptor: Sendable {
+    let url: URL
+    let type: MediaItem.MediaType
+    let createdAt: Date
+    let fileSize: Int64
+    let duration: TimeInterval?
+    let thumbnailData: Data?
+}
+
+private struct MediaLibrarySnapshot: Sendable {
+    let recordings: [MediaDescriptor]
+    let screenshots: [MediaDescriptor]
+}
 
 @MainActor
-class MediaLibraryManager: ObservableObject {
+final class MediaLibraryManager: ObservableObject {
     @Published var recordings: [MediaItem] = []
     @Published var screenshots: [MediaItem] = []
     @Published var allItems: [MediaItem] = []
+    @Published var errorMessage: String?
+
+    private let directories: MediaLibraryDirectories
+    private let trashHandler: (URL) throws -> Void
 
     static var baseDirectory: URL {
-        FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Captr")
+        screenshotsDirectory.deletingLastPathComponent()
     }
 
     /// Recordings land in Downloads where they're easy to find. The library
-    /// only indexes files matching Captr's own naming so it never has to
-    /// scan (or thumbnail) unrelated videos living there.
-    static var recordingsDirectory: URL {
-        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
-    }
+    /// only indexes files matching Captr's own naming.
+    static var recordingsDirectory: URL { MediaLibraryDirectories.live.recordings }
+    static var screenshotsDirectory: URL { MediaLibraryDirectories.live.screenshots }
 
-    private static let recordingFileNamePrefixes = [
+    private nonisolated static let recordingFileNamePrefixes = [
         "Screen Recording ",
         "iPhone Mirror ",
         "Android Device "
     ]
 
-    /// Whether a Downloads file is one Captr produced — gates which videos the
-    /// library indexes (and may delete) so it never touches unrelated files.
+    init(
+        directories: MediaLibraryDirectories = .live,
+        trashHandler: @escaping (URL) throws -> Void = { url in
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        }
+    ) {
+        self.directories = directories
+        self.trashHandler = trashHandler
+    }
+
+    /// Whether a Downloads file is one Captr produced. This prevents scans or
+    /// deletion controls from ever including unrelated user videos.
     nonisolated static func isRecognizedRecording(fileName: String) -> Bool {
         let ext = (fileName as NSString).pathExtension.lowercased()
         guard ["mp4", "mov", "m4v"].contains(ext) else { return false }
         return recordingFileNamePrefixes.contains { fileName.hasPrefix($0) }
     }
 
-    static var screenshotsDirectory: URL {
-        baseDirectory.appendingPathComponent("Screenshots")
-    }
-
     func loadLibrary() async {
-        let fm = FileManager.default
-
-        try? fm.createDirectory(at: Self.recordingsDirectory, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: Self.screenshotsDirectory, withIntermediateDirectories: true)
-
-        recordings = await loadItems(from: Self.recordingsDirectory, type: .recording)
-        screenshots = await loadItems(from: Self.screenshotsDirectory, type: .screenshot)
-        allItems = (recordings + screenshots).sorted { $0.createdAt > $1.createdAt }
+        errorMessage = nil
+        do {
+            let snapshot = try await Self.loadSnapshot(from: directories)
+            recordings = snapshot.recordings.map(Self.makeItem)
+            screenshots = snapshot.screenshots.map(Self.makeItem)
+            allItems = (recordings + screenshots).sorted { $0.createdAt > $1.createdAt }
+        } catch {
+            errorMessage = "Could not load the media library: \(error.localizedDescription)"
+        }
     }
 
-    private func loadItems(from directory: URL, type: MediaItem.MediaType) async -> [MediaItem] {
+    @concurrent
+    private nonisolated static func loadSnapshot(
+        from directories: MediaLibraryDirectories
+    ) async throws -> MediaLibrarySnapshot {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [
-            .fileSizeKey, .creationDateKey
-        ]) else {
-            return []
-        }
+        try fm.createDirectory(at: directories.recordings, withIntermediateDirectories: true)
+        try fm.createDirectory(at: directories.screenshots, withIntermediateDirectories: true)
 
-        var items: [MediaItem] = []
+        let recordings = await loadDescriptors(from: directories.recordings, type: .recording)
+        let screenshots = await loadDescriptors(from: directories.screenshots, type: .screenshot)
+        return MediaLibrarySnapshot(recordings: recordings, screenshots: screenshots)
+    }
+
+    private nonisolated static func loadDescriptors(
+        from directory: URL,
+        type: MediaItem.MediaType
+    ) async -> [MediaDescriptor] {
+        let keys: [URLResourceKey] = [.fileSizeKey, .creationDateKey, .contentModificationDateKey, .isRegularFileKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var descriptors: [MediaDescriptor] = []
+        descriptors.reserveCapacity(files.count)
         for file in files {
-            if let item = await makeItem(for: file, type: type) {
-                items.append(item)
-            }
+            guard let descriptor = await makeDescriptor(for: file, type: type) else { continue }
+            descriptors.append(descriptor)
         }
-
-        return items.sorted { $0.createdAt > $1.createdAt }
+        return descriptors.sorted { $0.createdAt > $1.createdAt }
     }
 
-    private func makeItem(for file: URL, type: MediaItem.MediaType) async -> MediaItem? {
-        let fm = FileManager.default
+    private nonisolated static func makeDescriptor(
+        for file: URL,
+        type: MediaItem.MediaType
+    ) async -> MediaDescriptor? {
         let ext = file.pathExtension.lowercased()
-        let isValidType: Bool
         switch type {
         case .recording:
-            isValidType = Self.isRecognizedRecording(fileName: file.lastPathComponent)
+            guard isRecognizedRecording(fileName: file.lastPathComponent) else { return nil }
         case .screenshot:
-            isValidType = ["png", "jpg", "jpeg", "tiff"].contains(ext)
+            guard ["png", "jpg", "jpeg", "tiff"].contains(ext) else { return nil }
         }
 
-        guard isValidType else { return nil }
-
-        let attributes = try? fm.attributesOfItem(atPath: file.path)
-        let fileSize = (attributes?[.size] as? Int64) ?? 0
-        let createdAt = (attributes?[.creationDate] as? Date) ?? Date()
+        let values = try? file.resourceValues(forKeys: [
+            .fileSizeKey, .creationDateKey, .contentModificationDateKey, .isRegularFileKey
+        ])
+        guard values?.isRegularFile != false else { return nil }
 
         var duration: TimeInterval?
-        var thumbnail: NSImage?
-
+        var thumbnailData: Data?
         if type == .recording {
             let asset = AVURLAsset(url: file)
             duration = try? await asset.load(.duration).seconds
-            thumbnail = await generateVideoThumbnail(for: file)
-        } else {
-            thumbnail = NSImage(contentsOf: file)
-            if let thumb = thumbnail {
-                let maxSize: CGFloat = 200
-                let ratio = min(maxSize / thumb.size.width, maxSize / thumb.size.height, 1.0)
-                let newSize = NSSize(width: thumb.size.width * ratio, height: thumb.size.height * ratio)
-                let resized = NSImage(size: newSize)
-                resized.lockFocus()
-                thumb.draw(in: NSRect(origin: .zero, size: newSize))
-                resized.unlockFocus()
-                thumbnail = resized
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 400, height: 400)
+            if let (image, _) = try? await generator.image(at: .zero) {
+                thumbnailData = pngData(from: image)
             }
+        } else {
+            thumbnailData = imageThumbnailData(for: file)
         }
 
-        return MediaItem(
-            id: UUID(),
+        return MediaDescriptor(
             url: file,
             type: type,
-            createdAt: createdAt,
-            fileSize: fileSize,
+            createdAt: values?.creationDate ?? values?.contentModificationDate ?? .distantPast,
+            fileSize: Int64(values?.fileSize ?? 0),
             duration: duration,
-            thumbnail: thumbnail
+            thumbnailData: thumbnailData
         )
     }
 
-    private func generateVideoThumbnail(for url: URL) async -> NSImage? {
-        let asset = AVURLAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 400, height: 400)
+    private nonisolated static func imageThumbnailData(for url: URL) -> Data? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 400
+              ] as CFDictionary) else { return nil }
+        return pngData(from: image)
+    }
 
-        do {
-            let (cgImage, _) = try await generator.image(at: .zero)
-            return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-        } catch {
-            return nil
-        }
+    private nonisolated static func pngData(from image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        return CGImageDestinationFinalize(destination) ? data as Data : nil
+    }
+
+    private static func makeItem(_ descriptor: MediaDescriptor) -> MediaItem {
+        MediaItem(
+            id: descriptor.url.standardizedFileURL.path,
+            url: descriptor.url,
+            type: descriptor.type,
+            createdAt: descriptor.createdAt,
+            fileSize: descriptor.fileSize,
+            duration: descriptor.duration,
+            thumbnail: descriptor.thumbnailData.flatMap(NSImage.init(data:))
+        )
     }
 
     func deleteItem(_ item: MediaItem) {
-        // Trash rather than unlink so an accidental delete is recoverable.
-        try? FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
-        recordings.removeAll { $0.id == item.id }
-        screenshots.removeAll { $0.id == item.id }
-        allItems.removeAll { $0.id == item.id }
+        errorMessage = nil
+        do {
+            try trashHandler(item.url)
+            recordings.removeAll { $0.id == item.id }
+            screenshots.removeAll { $0.id == item.id }
+            allItems.removeAll { $0.id == item.id }
+        } catch {
+            errorMessage = "Could not move \(item.fileName) to the Trash: \(error.localizedDescription)"
+        }
     }
 
     func revealInFinder(_ item: MediaItem) {
@@ -143,20 +217,27 @@ class MediaLibraryManager: ObservableObject {
     }
 
     func openInDefaultApp(_ item: MediaItem) {
+        guard FileManager.default.fileExists(atPath: item.url.path) else {
+            errorMessage = "\(item.fileName) no longer exists."
+            return
+        }
         NSWorkspace.shared.open(item.url)
     }
 
-    /// Appends a single freshly saved file instead of rescanning the whole
-    /// library (which regenerates every thumbnail) after each capture.
     func addRecording(at url: URL) async {
-        guard let item = await makeItem(for: url, type: .recording) else { return }
-        recordings.insert(item, at: 0)
-        allItems.insert(item, at: 0)
+        guard let descriptor = await Self.makeDescriptor(for: url, type: .recording) else { return }
+        insert(Self.makeItem(descriptor), into: &recordings)
     }
 
     func addScreenshot(at url: URL) async {
-        guard let item = await makeItem(for: url, type: .screenshot) else { return }
-        screenshots.insert(item, at: 0)
+        guard let descriptor = await Self.makeDescriptor(for: url, type: .screenshot) else { return }
+        insert(Self.makeItem(descriptor), into: &screenshots)
+    }
+
+    private func insert(_ item: MediaItem, into typedItems: inout [MediaItem]) {
+        typedItems.removeAll { $0.id == item.id }
+        typedItems.insert(item, at: 0)
+        allItems.removeAll { $0.id == item.id }
         allItems.insert(item, at: 0)
     }
 }

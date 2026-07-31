@@ -18,11 +18,21 @@ final class ToolLocatorTests: XCTestCase {
         let tempFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("captr-tool-\(UUID().uuidString)")
         try Data("#!/bin/sh\n".utf8).write(to: tempFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tempFile.path)
         defer { try? FileManager.default.removeItem(at: tempFile) }
 
         let result = ToolLocator.find("captr-bogus-tool", extraPaths: [tempFile.path])
         XCTAssertEqual(result, tempFile.path,
                        "find() should return the first existing candidate path")
+    }
+
+    func testFind_nonExecutableFile_returnsNil() throws {
+        let tempFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("captr-tool-\(UUID().uuidString)")
+        try Data("not executable".utf8).write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        XCTAssertNil(ToolLocator.find("captr-bogus-tool", extraPaths: [tempFile.path]))
     }
 
     // MARK: - find() ignores extra paths that don't exist

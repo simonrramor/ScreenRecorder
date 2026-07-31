@@ -3,6 +3,7 @@ import AppKit
 import AVFoundation
 import VideoToolbox
 import os.log
+import Darwin
 
 final class IOSMirrorVideoRecorder: @unchecked Sendable {
     private let lock = NSLock()
@@ -146,14 +147,12 @@ final class IOSMirrorVideoRecorder: @unchecked Sendable {
     }
 
     func finish() async -> URL? {
-        lock.lock()
-        if isFinishing {
-            lock.unlock()
-            return nil
+        let appended: Bool? = lock.withLock {
+            guard !isFinishing else { return nil }
+            isFinishing = true
+            return didAppendFrame
         }
-        isFinishing = true
-        let appended = didAppendFrame
-        lock.unlock()
+        guard let appended else { return nil }
 
         if !appended {
             input.markAsFinished()
@@ -313,10 +312,7 @@ class IOSFrameGrabber: @unchecked Sendable {
     private var latestFrameData: Data?
     private var isFrameDeliveryScheduled = false
 
-    private var isRunning: Bool {
-        get { lock.withLock { _isRunning } }
-        set { lock.withLock { _isRunning = newValue } }
-    }
+    private var isRunning: Bool { lock.withLock { _isRunning } }
 
     // Delivers the newest decoded frame on the main thread, dropping stale frames.
     var onFrame: ((NSImage) -> Void)?
@@ -328,7 +324,13 @@ class IOSFrameGrabber: @unchecked Sendable {
     }
 
     func start() {
-        isRunning = true
+        let shouldStart = lock.withLock {
+            guard !_isRunning else { return false }
+            _isRunning = true
+            return true
+        }
+        guard shouldStart else { return }
+
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             self?.runStreamingProcess()
         }
@@ -346,7 +348,11 @@ class IOSFrameGrabber: @unchecked Sendable {
         isFrameDeliveryScheduled = false
         frameDeliveryLock.unlock()
 
-        proc?.terminate()
+        if let proc, proc.isRunning {
+            let processID = proc.processIdentifier
+            proc.terminate()
+            Self.forceKillIfStillRunning(processID: processID)
+        }
     }
 
     private func runStreamingProcess() {
@@ -366,14 +372,27 @@ class IOSFrameGrabber: @unchecked Sendable {
                 continue
             }
 
-            lock.withLock { _process = proc }
+            let shouldRead = lock.withLock {
+                guard _isRunning else { return false }
+                _process = proc
+                return true
+            }
+            guard shouldRead else {
+                let processID = proc.processIdentifier
+                proc.terminate()
+                Self.forceKillIfStillRunning(processID: processID)
+                proc.waitUntilExit()
+                return
+            }
             let fileHandle = pipe.fileHandleForReading
 
             // Read length-prefixed image frames: [4 bytes big-endian length][image data]
             while isRunning && proc.isRunning {
                 guard let lengthData = readExactly(from: fileHandle, count: 4) else { break }
 
-                let length = lengthData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+                let length = lengthData.reduce(UInt32.zero) { partial, byte in
+                    (partial << 8) | UInt32(byte)
+                }
                 guard length > 0 && length < 50_000_000 else { break }
 
                 guard let frameData = readExactly(from: fileHandle, count: Int(length)) else { break }
@@ -381,13 +400,28 @@ class IOSFrameGrabber: @unchecked Sendable {
                 enqueueFrameData(frameData)
             }
 
-            proc.terminate()
+            if proc.isRunning {
+                let processID = proc.processIdentifier
+                proc.terminate()
+                Self.forceKillIfStillRunning(processID: processID)
+            }
             proc.waitUntilExit()
-            lock.withLock { _process = nil }
+            lock.withLock {
+                if _process === proc {
+                    _process = nil
+                }
+            }
 
             if isRunning {
                 Thread.sleep(forTimeInterval: 1.0)
             }
+        }
+    }
+
+    private static func forceKillIfStillRunning(processID: pid_t) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
+            guard kill(processID, 0) == 0 else { return }
+            kill(processID, SIGKILL)
         }
     }
 
@@ -474,30 +508,14 @@ class IOSDeviceMirror: ObservableObject {
     private var recordingStartDate: Date?
     private var mirroringDeviceUDID: String?
     private var videoRecorder: IOSMirrorVideoRecorder?
-    private var terminationObserver: NSObjectProtocol?
+    private var fallbackStartupTask: Task<Void, Never>?
+    private var fallbackGeneration: UUID?
+    private var tunneldTask: Task<Void, Never>?
 
     init() {
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = NSColor.black.cgColor
         displayLayer.wantsExtendedDynamicRangeContent = false
-
-        // Stop the capture session / streaming helper when the app quits so
-        // we don't leave orphaned children or a held camera device behind.
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.stopMirroring()
-            }
-        }
-    }
-
-    deinit {
-        if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
-        }
     }
 
     // Tool paths, resolved per call so installing a tool while the app is
@@ -612,6 +630,9 @@ class IOSDeviceMirror: ObservableObject {
         mirroringDeviceName = deviceName
         mirroringDeviceUDID = udid
         isLowLatencyMirroring = false
+        currentFrame = nil
+        let generation = UUID()
+        fallbackGeneration = generation
 
         // Ensure tunneld is running (needed for iOS 17+). Runs in the
         // background; the frame grabber retries until the tunnel is up.
@@ -622,6 +643,8 @@ class IOSDeviceMirror: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self = self, self.isMirroring else { return }
                 self.currentFrame = image
+                self.fallbackStartupTask?.cancel()
+                self.fallbackStartupTask = nil
                 if self.deviceResolution == .zero {
                     self.deviceResolution = image.size
                 }
@@ -635,9 +658,28 @@ class IOSDeviceMirror: ObservableObject {
         grabber.start()
         frameGrabber = grabber
         isMirroring = true
+
+        fallbackStartupTask?.cancel()
+        fallbackStartupTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(8))
+            } catch {
+                return
+            }
+            guard let self,
+                  self.fallbackGeneration == generation,
+                  self.currentFrame == nil else { return }
+            let message = "The iPhone screen helper started but did not deliver a frame. Check that the phone is unlocked and tunneld is running."
+            self.stopMirroring()
+            self.errorMessage = message
+            self.onMirroringEnded?(message)
+        }
     }
 
     func stopMirroring() {
+        fallbackGeneration = nil
+        fallbackStartupTask?.cancel()
+        fallbackStartupTask = nil
         teardownNativeFeed()
 
         frameGrabber?.stop()
@@ -707,8 +749,7 @@ class IOSDeviceMirror: ObservableObject {
         let outputDir = MediaLibraryManager.recordingsDirectory
         do {
             try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-            let fileName = "iPhone Mirror \(Date().screenRecorderFileName).mp4"
-            let outputURL = outputDir.appendingPathComponent(fileName)
+            let outputURL = CaptureFileURL.unique(in: outputDir, prefix: "iPhone Mirror", pathExtension: "mp4")
             let recorder = try IOSMirrorVideoRecorder(outputURL: outputURL, frameSize: frameSize)
             videoRecorder = recorder
             isRecording = true
@@ -761,30 +802,28 @@ class IOSDeviceMirror: ObservableObject {
     /// requires tunneld to run as root, so the user is asked before the
     /// admin-privileges prompt appears.
     private func ensureTunneld() {
+        guard tunneldTask == nil else { return }
         guard let pymobiledevicePath = ToolLocator.pymobiledevice3 else { return }
 
-        Task.detached(priority: .utility) {
-            guard !Self.isTunneldRunning() else { return }
+        tunneldTask = Task { [weak self] in
+            defer { self?.tunneldTask = nil }
+            guard !(await Self.isTunneldRunning()) else { return }
 
-            let approved = await MainActor.run { Self.confirmTunneldStart() }
+            let approved = Self.confirmTunneldStart()
             guard approved else { return }
 
-            Self.startTunneld(pymobiledevicePath: pymobiledevicePath)
+            await Self.startTunneld(pymobiledevicePath: pymobiledevicePath)
         }
     }
 
-    nonisolated private static func isTunneldRunning() -> Bool {
-        let checkProcess = Process()
-        checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        checkProcess.arguments = ["-f", "pymobiledevice3 remote tunneld"]
-        let pipe = Pipe()
-        checkProcess.standardOutput = pipe
-        checkProcess.standardError = Pipe()
-        try? checkProcess.run()
-        checkProcess.waitUntilExit()
-
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    @concurrent
+    private static func isTunneldRunning() async -> Bool {
+        guard let result = try? await ProcessRunner.run(
+            "/usr/bin/pgrep",
+            arguments: ["-f", "pymobiledevice3 remote tunneld"],
+            timeout: 3
+        ) else { return false }
+        return result.succeeded && !result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     @MainActor
@@ -797,15 +836,17 @@ class IOSDeviceMirror: ObservableObject {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
-    nonisolated private static func startTunneld(pymobiledevicePath: String) {
-        let script = "do shell script \"\(pymobiledevicePath.replacingOccurrences(of: "\"", with: "\\\"")) remote tunneld -d\" with administrator privileges"
-        let osaProcess = Process()
-        osaProcess.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        osaProcess.arguments = ["-e", script]
-        osaProcess.standardOutput = Pipe()
-        osaProcess.standardError = Pipe()
-        try? osaProcess.run()
-        osaProcess.waitUntilExit()
+    @concurrent
+    private static func startTunneld(pymobiledevicePath: String) async {
+        let escapedPath = pymobiledevicePath
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "do shell script \"\(escapedPath) remote tunneld -d\" with administrator privileges"
+        _ = try? await ProcessRunner.run(
+            "/usr/bin/osascript",
+            arguments: ["-e", script],
+            timeout: 30
+        )
     }
 
     private func startDurationTimer() {

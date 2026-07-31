@@ -3,7 +3,7 @@ import Combine
 import SwiftUI
 
 @MainActor
-class DeviceMirrorWindow {
+class DeviceMirrorWindow: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var imageViewRef: NSImageView?
     private var iosMirror: IOSDeviceMirror?
@@ -11,11 +11,21 @@ class DeviceMirrorWindow {
     private weak var appState: AppState?
     private var isWindowOpen = false
     private var frameCancellable: AnyCancellable?
+    private var recordingStateCancellable: AnyCancellable?
+    private weak var recordButton: NSButton?
+    private var isClosingProgrammatically = false
+    private var displaysNativeIOSFeed = false
 
     // MARK: - iOS Mirror Window
 
     func openIOSMirrorWindow(mirror: IOSDeviceMirror, deviceName: String, appState: AppState) {
         if let existingWindow = openWindow {
+            guard iosMirror === mirror,
+                  displaysNativeIOSFeed == mirror.isLowLatencyMirroring else {
+                closeWindow()
+                openIOSMirrorWindow(mirror: mirror, deviceName: deviceName, appState: appState)
+                return
+            }
             self.iosMirror = mirror
             self.appState = appState
             existingWindow.title = "Mirror - \(deviceName)"
@@ -27,7 +37,9 @@ class DeviceMirrorWindow {
         }
 
         self.iosMirror = mirror
+        self.androidMirror = nil
         self.appState = appState
+        displaysNativeIOSFeed = mirror.isLowLatencyMirroring
 
         let deviceRes = mirror.deviceResolution
         let aspect = deviceRes.width > 0 && deviceRes.height > 0 ? deviceRes.width / deviceRes.height : 9.0 / 19.5
@@ -88,6 +100,8 @@ class DeviceMirrorWindow {
         win.setFrameAutosaveName("IOSMirrorWindow")
         win.minSize = NSSize(width: 200, height: 400)
         win.animationBehavior = .none
+        win.isReleasedWhenClosed = false
+        win.delegate = self
 
         window = win
         isWindowOpen = true
@@ -98,6 +112,11 @@ class DeviceMirrorWindow {
 
     func openAndroidMirrorWindow(mirror: AndroidDeviceMirror, appState: AppState) {
         if let existingWindow = openWindow {
+            guard androidMirror === mirror else {
+                closeWindow()
+                openAndroidMirrorWindow(mirror: mirror, appState: appState)
+                return
+            }
             self.androidMirror = mirror
             self.appState = appState
             existingWindow.title = "Mirror - \(mirror.mirroringDeviceName)"
@@ -109,6 +128,7 @@ class DeviceMirrorWindow {
         }
 
         self.androidMirror = mirror
+        self.iosMirror = nil
         self.appState = appState
 
         let deviceRes = mirror.deviceResolution
@@ -155,6 +175,8 @@ class DeviceMirrorWindow {
         win.setFrameAutosaveName("AndroidMirrorWindow")
         win.minSize = NSSize(width: 200, height: 400)
         win.animationBehavior = .none
+        win.isReleasedWhenClosed = false
+        win.delegate = self
 
         window = win
         imageViewRef = imageView
@@ -177,16 +199,44 @@ class DeviceMirrorWindow {
 
     func closeWindow() {
         isWindowOpen = false
-        imageViewRef = nil
-        frameCancellable = nil
 
         if let win = window {
+            isClosingProgrammatically = true
+            win.delegate = nil
             win.contentView = nil
             win.close()
             window = nil
+            isClosingProgrammatically = false
         }
+        clearViewReferences()
+    }
+
+    private func clearViewReferences() {
+        imageViewRef = nil
+        frameCancellable = nil
+        recordingStateCancellable = nil
+        recordButton = nil
         iosMirror = nil
         androidMirror = nil
+        displaysNativeIOSFeed = false
+    }
+
+    nonisolated func windowWillClose(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let shouldDisconnect = !self.isClosingProgrammatically
+            let wasIOS = self.iosMirror != nil
+            self.window = nil
+            self.isWindowOpen = false
+            self.clearViewReferences()
+
+            guard shouldDisconnect, let appState = self.appState else { return }
+            if wasIOS {
+                await appState.disconnectIOSMirror()
+            } else {
+                await appState.disconnectAndroidMirror()
+            }
+        }
     }
 
     var isOpen: Bool {
@@ -229,6 +279,23 @@ class DeviceMirrorWindow {
         recordBtn.target = self
         recordBtn.action = #selector(recordTapped(_:))
         controlsView.addSubview(recordBtn)
+        recordButton = recordBtn
+        if isIOS, let mirror = iosMirror {
+            recordingStateCancellable = mirror.$isRecording
+                .receive(on: DispatchQueue.main)
+                .sink { [weak recordBtn] isRecording in
+                    recordBtn?.title = isRecording ? "Stop" : "Record"
+                    recordBtn?.isEnabled = true
+                }
+        } else if let mirror = androidMirror {
+            recordingStateCancellable = mirror.$isRecording
+                .combineLatest(mirror.$isFinalizingRecording)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak recordBtn] isRecording, isFinalizing in
+                    recordBtn?.title = isFinalizing ? "Saving…" : (isRecording ? "Stop" : "Record")
+                    recordBtn?.isEnabled = !isFinalizing
+                }
+        }
         lowerXOffset += 95
 
         let copyBtn = makeButton(title: "Copy", x: lowerXOffset, y: 8, color: .systemBlue)
@@ -260,14 +327,15 @@ class DeviceMirrorWindow {
         if let mirror = iosMirror {
             if mirror.isRecording {
                 Task {
+                    sender.isEnabled = false
                     if let url = await mirror.stopRecording() {
                         await appState?.mediaLibrary.addRecording(at: url)
                         appState?.showSavedNotification("iPhone recording saved")
                     } else if let error = mirror.errorMessage {
                         appState?.showError(error)
                     }
+                    sender.isEnabled = true
                 }
-                sender.title = "Record"
             } else {
                 mirror.startRecording()
                 if mirror.isRecording {
@@ -279,15 +347,20 @@ class DeviceMirrorWindow {
         } else if let mirror = androidMirror {
             if mirror.isRecording {
                 Task {
+                    sender.isEnabled = false
                     if let url = await mirror.stopRecording() {
                         await appState?.mediaLibrary.addRecording(at: url)
                         appState?.showSavedNotification("Device recording saved")
+                    } else {
+                        appState?.showError(mirror.errorMessage ?? "Android recording could not be saved")
                     }
+                    sender.isEnabled = true
                 }
-                sender.title = "Record"
             } else {
                 mirror.startRecording()
-                sender.title = "Stop"
+                if !mirror.isRecording {
+                    appState?.showError(mirror.errorMessage ?? "Failed to start Android recording")
+                }
             }
         }
     }
@@ -308,9 +381,15 @@ class DeviceMirrorWindow {
     }
 
     @objc private func disconnectTapped(_ sender: NSButton) {
-        iosMirror?.stopMirroring()
-        androidMirror?.stopMirroring()
-        closeWindow()
+        sender.isEnabled = false
+        Task { [weak self] in
+            guard let self, let appState = self.appState else { return }
+            if self.iosMirror != nil {
+                await appState.disconnectIOSMirror()
+            } else {
+                await appState.disconnectAndroidMirror()
+            }
+        }
     }
 
     @objc private func androidNavBack(_ sender: NSButton) {

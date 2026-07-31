@@ -8,7 +8,7 @@ enum ToolLocator {
 
     static func find(_ tool: String, extraPaths: [String] = []) -> String? {
         let candidates = brewPrefixes.map { "\($0)/bin/\(tool)" } + extraPaths
-        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     static var adb: String? {
@@ -26,7 +26,7 @@ enum ToolLocator {
     /// Python keeps working, falling back to any `python3.x` binary present.
     static var pymobiledevicePython: String? {
         let symlink = "\(pymobiledeviceVenvBin)/python3"
-        if FileManager.default.fileExists(atPath: symlink) { return symlink }
+        if FileManager.default.isExecutableFile(atPath: symlink) { return symlink }
 
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: pymobiledeviceVenvBin) else {
             return nil
@@ -40,6 +40,6 @@ enum ToolLocator {
 
     static var pymobiledevice3: String? {
         let path = "\(pymobiledeviceVenvBin)/pymobiledevice3"
-        return FileManager.default.fileExists(atPath: path) ? path : nil
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
     }
 }

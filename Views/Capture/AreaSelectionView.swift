@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuartzCore
 
 // MARK: - Native Area Selection View (handles mouse events directly)
 
@@ -194,34 +195,27 @@ class AreaSelectionNSView: NSView {
 
 // MARK: - Area Selection Window Controller
 
+@MainActor
 class AreaSelectionWindowController {
     private var windows: [OverlayWindow] = []
     private var escapeMonitor: Any?
     private var localEscapeMonitor: Any?
+    private var isCompletingSelection = false
 
-    deinit {
-        removeMonitors()
-        let wins = windows
-        windows.removeAll()
-        for window in wins {
-            window.orderOut(nil)
-        }
-    }
-
-    @MainActor
     func showOverlay(onSelected: @escaping (CGRect) -> Void, onCancelled: @escaping () -> Void) {
         closeOverlay()
+        isCompletingSelection = false
 
         escapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 {
-                onCancelled()
-                self?.closeOverlay()
+                Task { @MainActor [weak self] in
+                    self?.finishSelection(onComplete: onCancelled)
+                }
             }
         }
         localEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 {
-                onCancelled()
-                self?.closeOverlay()
+                self?.finishSelection(onComplete: onCancelled)
                 return nil
             }
             return event
@@ -245,12 +239,12 @@ class AreaSelectionWindowController {
             let selectionView = AreaSelectionNSView(frame: NSRect(origin: .zero, size: screen.frame.size))
             selectionView.onAreaSelected = { [weak self] rect in
                 let screenRect = self?.convertToScreenCoordinates(rect, in: screen) ?? rect
-                onSelected(screenRect)
-                self?.closeOverlay()
+                self?.finishSelection {
+                    onSelected(screenRect)
+                }
             }
             selectionView.onCancelled = { [weak self] in
-                onCancelled()
-                self?.closeOverlay()
+                self?.finishSelection(onComplete: onCancelled)
             }
 
             window.contentView = selectionView
@@ -289,6 +283,19 @@ class AreaSelectionWindowController {
         // Force WindowServer to commit the alpha/orderOut changes before
         // the capture pipeline reads back the screen.
         CATransaction.flush()
+    }
+
+    private func finishSelection(onComplete: @escaping @MainActor () -> Void) {
+        guard !isCompletingSelection else { return }
+        isCompletingSelection = true
+        closeOverlay()
+
+        // Deliver the action on the next main-run-loop turn, after the
+        // overlay teardown and WindowServer transaction have been committed.
+        Task { @MainActor in
+            await Task.yield()
+            onComplete()
+        }
     }
 
     private func removeMonitors() {
@@ -494,34 +501,27 @@ class WindowSelectionNSView: NSView {
 
 // MARK: - Window Selection Window Controller
 
+@MainActor
 class WindowSelectionWindowController {
     private var panels: [NSPanel] = []
     private var escapeMonitor: Any?
     private var localEscapeMonitor: Any?
+    private var isCompletingSelection = false
 
-    deinit {
-        removeMonitors()
-        let panelsToClose = panels
-        panels.removeAll()
-        for panel in panelsToClose {
-            panel.orderOut(nil)
-        }
-    }
-
-    @MainActor
     func showOverlay(onSelected: @escaping (CGWindowID) -> Void, onCancelled: @escaping () -> Void) {
         closeOverlay()
+        isCompletingSelection = false
 
         escapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 {
-                onCancelled()
-                self?.closeOverlay()
+                Task { @MainActor [weak self] in
+                    self?.finishSelection(onComplete: onCancelled)
+                }
             }
         }
         localEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 {
-                onCancelled()
-                self?.closeOverlay()
+                self?.finishSelection(onComplete: onCancelled)
                 return nil
             }
             return event
@@ -544,12 +544,12 @@ class WindowSelectionWindowController {
 
             let selectionView = WindowSelectionNSView(frame: NSRect(origin: .zero, size: screen.frame.size), screen: screen)
             selectionView.onWindowSelected = { [weak self] windowID in
-                onSelected(windowID)
-                self?.closeOverlay()
+                self?.finishSelection {
+                    onSelected(windowID)
+                }
             }
             selectionView.onCancelled = { [weak self] in
-                onCancelled()
-                self?.closeOverlay()
+                self?.finishSelection(onComplete: onCancelled)
             }
 
             panel.contentView = selectionView
@@ -573,8 +573,22 @@ class WindowSelectionWindowController {
         let panelsToClose = panels
         panels.removeAll()
         for panel in panelsToClose {
+            panel.alphaValue = 0
             panel.orderOut(nil)
             panel.close()
+        }
+        // Commit the overlay removal before the selection callback refreshes
+        // ScreenCaptureKit's shareable-content snapshot.
+        CATransaction.flush()
+    }
+
+    private func finishSelection(onComplete: @escaping @MainActor () -> Void) {
+        guard !isCompletingSelection else { return }
+        isCompletingSelection = true
+        closeOverlay()
+        Task { @MainActor in
+            await Task.yield()
+            onComplete()
         }
     }
 
@@ -651,18 +665,10 @@ class RecordingOverlayNSView: NSView {
     }
 }
 
+@MainActor
 class RecordingAreaOverlayController {
     private var windows: [NSWindow] = []
 
-    deinit {
-        let wins = windows
-        windows.removeAll()
-        for window in wins {
-            window.orderOut(nil)
-        }
-    }
-
-    @MainActor
     func showOverlay(recordingRect: CGRect) {
         closeOverlay()
 

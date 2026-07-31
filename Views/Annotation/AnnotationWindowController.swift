@@ -56,14 +56,12 @@ class AnnotationWindowController: NSObject, NSWindowDelegate {
                 get: { [weak appState] in appState?.annotationState ?? AnnotationState() },
                 set: { [weak appState] in appState?.annotationState = $0 }
             ),
-            onSave: { [weak self, weak appState] annotatedImage in
+            onSave: { [weak appState] annotatedImage in
                 guard let appState = appState else { return }
-                self?.closeWindow()
                 Task { await appState.saveAnnotatedScreenshot(annotatedImage) }
             },
-            onSaveOriginal: { [weak self, weak appState] in
+            onSaveOriginal: { [weak appState] in
                 guard let appState = appState else { return }
-                self?.closeWindow()
                 Task { await appState.saveScreenshotWithoutAnnotation() }
             },
             onCancel: { [weak self, weak appState] in

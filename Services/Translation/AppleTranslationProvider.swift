@@ -1,6 +1,6 @@
 import Foundation
 import SwiftUI
-import Translation
+@preconcurrency import Translation
 import AppKit
 
 /// Drives Apple's on-device `Translation` framework from a long-lived hidden
@@ -56,8 +56,9 @@ final class AppleTranslationProvider: TranslationProvider {
 @MainActor
 private class TranslationCoordinator: ObservableObject {
     struct Request {
+        let id: UUID
+        let generation: UUID
         let text: String
-        let continuation: CheckedContinuation<String, Error>
     }
 
     @Published var config: TranslationSession.Configuration?
@@ -66,32 +67,62 @@ private class TranslationCoordinator: ObservableObject {
 
     private var currentSourceID: String?
     private var currentTargetID: String?
+    private var streamGeneration = UUID()
+    private var pending: [UUID: (generation: UUID, continuation: CheckedContinuation<String, Error>)] = [:]
 
     func submit(text: String, source: Locale.Language, target: Locale.Language) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            let request = Request(text: text, continuation: continuation)
+        let requestID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
 
-            let sourceID = source.maximalIdentifier
-            let targetID = target.maximalIdentifier
+                let sourceID = source.maximalIdentifier
+                let targetID = target.maximalIdentifier
+                if sourceID != currentSourceID || targetID != currentTargetID || streamContinuation == nil {
+                    let previousGeneration = streamGeneration
+                    streamContinuation?.finish()
+                    cancelRequests(for: previousGeneration)
 
-            if sourceID == currentSourceID,
-               targetID == currentTargetID,
-               let cont = streamContinuation {
-                cont.yield(request)
-            } else {
-                streamContinuation?.finish()
+                    let (newStream, newContinuation) = AsyncStream<Request>.makeStream()
+                    streamGeneration = UUID()
+                    stream = newStream
+                    streamContinuation = newContinuation
+                    currentSourceID = sourceID
+                    currentTargetID = targetID
+                    config = .init(source: source, target: target)
+                }
 
-                let (newStream, newContinuation) = AsyncStream<Request>.makeStream()
-                stream = newStream
-                streamContinuation = newContinuation
-                currentSourceID = sourceID
-                currentTargetID = targetID
-
-                newContinuation.yield(request)
-
-                config = .init(source: source, target: target)
+                let generation = streamGeneration
+                pending[requestID] = (generation, continuation)
+                streamContinuation?.yield(Request(id: requestID, generation: generation, text: text))
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancel(requestID: requestID)
             }
         }
+    }
+
+    func complete(_ request: Request, with result: Result<String, Error>) {
+        guard let entry = pending.removeValue(forKey: request.id),
+              entry.generation == request.generation else { return }
+        entry.continuation.resume(with: result)
+    }
+
+    func cancelRequests(for generation: UUID) {
+        let matches = pending.filter { $0.value.generation == generation }
+        for (id, entry) in matches {
+            pending.removeValue(forKey: id)
+            entry.continuation.resume(throwing: CancellationError())
+        }
+    }
+
+    private func cancel(requestID: UUID) {
+        guard let entry = pending.removeValue(forKey: requestID) else { return }
+        entry.continuation.resume(throwing: CancellationError())
     }
 }
 
@@ -104,13 +135,19 @@ private struct TranslationHostView: View {
         Color.clear
             .translationTask(coordinator.config) { session in
                 guard let stream = coordinator.stream else { return }
+                var generation: UUID?
                 for await request in stream {
+                    if Task.isCancelled { break }
+                    generation = request.generation
                     do {
                         let response = try await session.translate(request.text)
-                        request.continuation.resume(returning: response.targetText)
+                        coordinator.complete(request, with: .success(response.targetText))
                     } catch {
-                        request.continuation.resume(throwing: error)
+                        coordinator.complete(request, with: .failure(error))
                     }
+                }
+                if let generation {
+                    coordinator.cancelRequests(for: generation)
                 }
             }
     }

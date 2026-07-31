@@ -73,6 +73,14 @@ class KeyboardShortcutManager {
         }
     }
 
+    func shutdown() {
+        unregisterShortcuts()
+        if KeyboardShortcutManager.shared === self {
+            KeyboardShortcutManager.shared = nil
+        }
+        appState = nil
+    }
+
     private func installCarbonHandler() {
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
 
@@ -154,14 +162,4 @@ class KeyboardShortcutManager {
         return mods
     }
 
-    deinit {
-        for ref in hotKeyRefs {
-            if let ref = ref {
-                UnregisterEventHotKey(ref)
-            }
-        }
-        if let handler = eventHandler {
-            RemoveEventHandler(handler)
-        }
-    }
 }

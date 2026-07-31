@@ -4,6 +4,14 @@ import AppKit
 import CoreGraphics
 import ScreenCaptureKit
 
+/// A Sendable snapshot of the Vision data used by the rest of the app.
+/// Vision observations are Objective-C reference types and should not cross
+/// concurrency domains directly.
+struct RecognizedTextRegion: Sendable {
+    let text: String
+    let boundingBox: CGRect
+}
+
 @MainActor
 class TextCaptureService: ObservableObject {
     @Published var errorMessage: String?
@@ -15,7 +23,7 @@ class TextCaptureService: ObservableObject {
             return nil
         }
 
-        guard let observations = await recognizeObservations(from: cgImage) else {
+        guard let observations = await recognizeRegions(from: cgImage) else {
             errorMessage = "No text found in the selected area"
             return nil
         }
@@ -27,15 +35,15 @@ class TextCaptureService: ObservableObject {
     /// Captures the given screen area and returns the raw Vision observations
     /// alongside the source CGImage. Used by the in-place translation
     /// pipeline which needs per-segment bounding boxes, not assembled text.
-    func captureObservations(display: SCDisplay?, area: CGRect) async -> (CGImage, [VNRecognizedTextObservation])? {
+    func captureObservations(display: SCDisplay?, area: CGRect) async -> (CGImage, [RecognizedTextRegion])? {
         errorMessage = nil
 
         guard let cgImage = await captureScreenArea(display: display, area: area) else {
             return nil
         }
 
-        let observations = await recognizeObservations(from: cgImage) ?? []
-        return (cgImage, observations)
+        let regions = await recognizeRegions(from: cgImage) ?? []
+        return (cgImage, regions)
     }
 
     private func captureScreenArea(display: SCDisplay?, area: CGRect) async -> CGImage? {
@@ -47,51 +55,49 @@ class TextCaptureService: ObservableObject {
         }
     }
 
-    private func recognizeObservations(from cgImage: CGImage) async -> [VNRecognizedTextObservation]? {
-        return await withCheckedContinuation { continuation in
-            let request = VNRecognizeTextRequest { request, error in
-                if let error = error {
-                    print("Vision error: \(error)")
-                    continuation.resume(returning: nil)
-                    return
-                }
+    private func recognizeRegions(from cgImage: CGImage) async -> [RecognizedTextRegion]? {
+        await Self.performRecognition(on: cgImage)
+    }
 
-                guard let observations = request.results as? [VNRecognizedTextObservation],
-                      !observations.isEmpty else {
-                    continuation.resume(returning: nil)
-                    return
-                }
+    /// `VNImageRequestHandler.perform` is synchronous. Reading `results`
+    /// after it returns avoids the double-resume crash caused by combining a
+    /// request completion handler with a throwing `perform` call.
+    @concurrent
+    private nonisolated static func performRecognition(on cgImage: CGImage) async -> [RecognizedTextRegion]? {
+        guard !Task.isCancelled else { return nil }
 
-                continuation.resume(returning: observations)
-            }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
 
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                print("Vision perform error: \(error)")
-                continuation.resume(returning: nil)
-            }
+        do {
+            try VNImageRequestHandler(cgImage: cgImage, options: [:]).perform([request])
+        } catch {
+            return nil
         }
+
+        guard !Task.isCancelled else { return nil }
+        let regions = (request.results ?? []).compactMap { observation -> RecognizedTextRegion? in
+            guard let text = observation.topCandidates(1).first?.string,
+                  !text.isEmpty else { return nil }
+            return RecognizedTextRegion(text: text, boundingBox: observation.boundingBox)
+        }
+        return regions.isEmpty ? nil : regions
     }
 
     /// Groups recognized text observations into paragraphs based on vertical
     /// spacing. Lines with normal line-height gaps are joined with a space;
     /// lines with larger gaps get a paragraph break.
-    static func assembleText(from observations: [VNRecognizedTextObservation]) -> String {
+    nonisolated static func assembleText(from observations: [RecognizedTextRegion]) -> String {
         struct Line {
             let text: String
             let minY: CGFloat  // bottom edge in normalized coords (0 = bottom of image)
             let maxY: CGFloat  // top edge
         }
 
-        let lines: [Line] = observations.compactMap { obs in
-            guard let text = obs.topCandidates(1).first?.string else { return nil }
-            let box = obs.boundingBox
-            return Line(text: text, minY: box.minY, maxY: box.maxY)
+        let lines: [Line] = observations.map { observation in
+            let box = observation.boundingBox
+            return Line(text: observation.text, minY: box.minY, maxY: box.maxY)
         }
 
         guard !lines.isEmpty else { return "" }

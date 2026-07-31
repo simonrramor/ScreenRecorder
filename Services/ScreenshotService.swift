@@ -8,6 +8,12 @@ class ScreenshotService: ObservableObject {
     @Published var lastScreenshot: NSImage?
     @Published var errorMessage: String?
 
+    private let screenshotsDirectory: URL
+
+    init(screenshotsDirectory: URL? = nil) {
+        self.screenshotsDirectory = screenshotsDirectory ?? MediaLibraryManager.screenshotsDirectory
+    }
+
     // MARK: - Dock overlay exclusion
     //
     // The Dock process draws more than its bar: the ⌘-tab app switcher,
@@ -48,9 +54,6 @@ class ScreenshotService: ObservableObject {
 
     private static func currentDockExclusion() async -> DockExclusion? {
         if let cached = cachedDockExclusion, cachedExclusionStillValid(cached) {
-            // Serve the validated cache and refresh behind this capture so
-            // the capture itself never waits on window enumeration.
-            Task { await refreshDockExclusion() }
             return cached
         }
         return await refreshDockExclusion()
@@ -212,13 +215,10 @@ class ScreenshotService: ObservableObject {
     /// touch the deprecated CGWindowListCreateImage (which triggers monthly
     /// permission re-prompts on macOS 15+).
     ///
-    /// macOS 15.2 added a region-native screenshot API. Use it whenever it is
-    /// available: it captures the requested screen-space rect directly and
-    /// avoids mixing a display from one SCShareableContent snapshot with
-    /// cached Dock SCWindow handles from another snapshot. That mix can cause
-    /// ScreenCaptureKit to omit the frontmost window and reveal the content
-    /// underneath it. The filtered full-display path remains as a fallback
-    /// for macOS 15.0–15.1.
+    /// The display and filter must come from the same fresh content snapshot.
+    /// Mixing a cached display with newer window state can make
+    /// ScreenCaptureKit omit the frontmost window and reveal the content
+    /// underneath it.
     static func captureAreaCGImage(display: SCDisplay?, area: CGRect) async throws -> CGImage {
         guard let display = display else {
             throw NSError(domain: "ScreenshotService", code: 1, userInfo: [NSLocalizedDescriptionKey: "No display available"])
@@ -229,46 +229,44 @@ class ScreenshotService: ObservableObject {
             throw NSError(domain: "ScreenshotService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Selected area is empty"])
         }
 
-        if #available(macOS 15.2, *) {
-            return try await SCScreenshotManager.captureImage(in: screenRect)
+        // Build the display and filter from one fresh shareable-content
+        // snapshot after the selection overlay has closed. Reusing a display
+        // from an older snapshot—or mixing it with cached window handles—can
+        // make ScreenCaptureKit render a stale window stack.
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: false
+        )
+        guard let freshDisplay = content.displays.first(where: { $0.displayID == display.displayID }) else {
+            throw NSError(domain: "ScreenshotService", code: 3, userInfo: [NSLocalizedDescriptionKey: "Selected display is no longer available"])
         }
 
-        // The direct region API is unavailable on macOS 15.0–15.1. Keep the
-        // fallback deliberately unfiltered so a stale Dock exception can
-        // never hide the user's frontmost window.
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let filter = SCContentFilter(display: freshDisplay, excludingWindows: [])
         let config = SCStreamConfiguration()
-        let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
-        config.width = Int(CGFloat(display.width) * scale)
-        config.height = Int(CGFloat(display.height) * scale)
-        config.showsCursor = false
-        config.capturesAudio = false
-        config.pixelFormat = kCVPixelFormatType_32BGRA
-
-        let fullImage = try await SCScreenshotManager.captureImage(
-            contentFilter: filter,
-            configuration: config
-        )
-
-        let imageSize = CGSize(width: CGFloat(fullImage.width), height: CGFloat(fullImage.height))
-        guard let cropRect = ScreenGeometry.pixelCropRect(
+        guard let localRect = ScreenGeometry.integralDisplayLocalRect(
             for: screenRect,
-            displayID: display.displayID,
-            imageSize: imageSize
+            displayID: freshDisplay.displayID
         ) else {
             throw NSError(domain: "ScreenshotService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Selected area is outside the captured display"])
         }
 
-        guard let cropped = fullImage.cropping(to: cropRect) else {
-            throw NSError(domain: "ScreenshotService", code: 2, userInfo: [NSLocalizedDescriptionKey: "crop out of bounds"])
-        }
+        let scale = ScreenGeometry.backingScale(for: freshDisplay.displayID) ?? 2.0
+        config.sourceRect = localRect
+        config.width = max(1, Int(localRect.width * scale))
+        config.height = max(1, Int(localRect.height * scale))
+        config.showsCursor = false
+        config.capturesAudio = false
+        config.pixelFormat = kCVPixelFormatType_32BGRA
 
-        return cropped
+        return try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: config
+        )
     }
 
     func saveScreenshot(_ image: NSImage, annotated: Bool = false) -> URL? {
         errorMessage = nil
-        let dir = MediaLibraryManager.screenshotsDirectory
+        let dir = screenshotsDirectory
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         } catch {
@@ -277,8 +275,7 @@ class ScreenshotService: ObservableObject {
         }
 
         let prefix = annotated ? "Annotated Screenshot" : "Screenshot"
-        let fileName = "\(prefix) \(Date().screenRecorderFileName).png"
-        let url = dir.appendingPathComponent(fileName)
+        let url = CaptureFileURL.unique(in: dir, prefix: prefix, pathExtension: "png")
 
         guard let tiffData = image.tiffRepresentation,
               let bitmapRep = NSBitmapImageRep(data: tiffData),
@@ -288,7 +285,7 @@ class ScreenshotService: ObservableObject {
         }
 
         do {
-            try pngData.write(to: url)
+            try pngData.write(to: url, options: .atomic)
             return url
         } catch {
             errorMessage = "Failed to save screenshot: \(error.localizedDescription)"

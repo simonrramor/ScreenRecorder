@@ -79,12 +79,14 @@ class PermissionsManager: ObservableObject {
         }
     }
 
-    func requestMicrophonePermission() async {
+    @discardableResult
+    func requestMicrophonePermission() async -> Bool {
         let granted = await AVCaptureDevice.requestAccess(for: .audio)
         hasMicrophonePermission = granted
         if !granted {
             openMicrophoneSettings()
         }
+        return granted
     }
 
     private func openScreenRecordingSettings() {

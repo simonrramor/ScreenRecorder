@@ -43,34 +43,15 @@ extension TranslationService {
     /// the compositor can leave that segment's original text visible rather
     /// than masking it with nothing.
     private func translateConcurrentlyTolerant(_ strings: [String], from source: Locale.Language, to target: Locale.Language) async -> [String?] {
-        var results = Array<String?>(repeating: nil, count: strings.count)
-
-        await withTaskGroup(of: (Int, String?).self) { group in
-            var next = 0
-            let limit = min(6, strings.count)
-
-            for _ in 0..<limit {
-                let idx = next
-                next += 1
-                group.addTask { @MainActor [self] in
-                    let t = try? await self.translate(strings[idx], from: source, to: target)
-                    return (idx, t)
-                }
-            }
-
-            while let (idx, t) = await group.next() {
-                results[idx] = t
-                if next < strings.count {
-                    let taskIdx = next
-                    next += 1
-                    group.addTask { @MainActor [self] in
-                        let translated = try? await self.translate(strings[taskIdx], from: source, to: target)
-                        return (taskIdx, translated)
-                    }
-                }
-            }
+        var results: [String?] = []
+        results.reserveCapacity(strings.count)
+        for string in strings {
+            guard !Task.isCancelled else { break }
+            results.append(try? await translate(string, from: source, to: target))
         }
-
+        if results.count < strings.count {
+            results.append(contentsOf: repeatElement(nil, count: strings.count - results.count))
+        }
         return results
     }
 }
