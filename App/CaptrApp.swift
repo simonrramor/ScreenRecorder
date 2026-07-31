@@ -41,7 +41,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var appState: AppState?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        // Captr lives in the menu bar. Accessory apps can still present and
+        // focus their windows without occupying the Dock or Command-Tab.
+        NSApp.setActivationPolicy(.accessory)
 
         DispatchQueue.main.async {
             if let window = NSApp.windows.first {

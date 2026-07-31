@@ -19,13 +19,13 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.4.15</string>
+	<string>1.4.16</string>
 	<key>CFBundleVersion</key>
-	<string>41</string>
+	<string>42</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>LSUIElement</key>
-	<false/>
+	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Captr needs camera access to mirror and capture your connected iOS device screen.</string>
 	<key>NSMainStoryboardFile</key>
