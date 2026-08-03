@@ -58,6 +58,7 @@ class AppState: ObservableObject {
     private var notificationDismissTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
     private var translationOperationID: UUID?
+    private var preparedAreaCapture: ScreenshotService.PreparedAreaCapture?
 
     private let areaSelectionController = AreaSelectionWindowController()
     private let windowSelectionController = WindowSelectionWindowController()
@@ -162,6 +163,7 @@ class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
+                    self?.preparedAreaCapture = nil
                     await self?.captureEngine.refreshAvailableContent()
                 }
             }
@@ -471,6 +473,7 @@ class AppState: ObservableObject {
             pendingCaptureAction = .recording
             showWindowSelection()
         case .area:
+            preparedAreaCapture = nil
             pendingCaptureAction = .recording
             showAreaSelection()
         }
@@ -547,6 +550,8 @@ class AppState: ObservableObject {
 
     func onAreaSelected(_ rect: CGRect) async {
         configuration.selectedArea = rect
+        let capturePreparedBeforeSelection = preparedAreaCapture
+        preparedAreaCapture = nil
 
         if let action = pendingCaptureAction {
             pendingCaptureAction = nil
@@ -557,16 +562,26 @@ class AppState: ObservableObject {
                 recordingAreaOverlayController.showOverlay(recordingRect: rect)
                 await startEngineRecording()
             case .screenshot:
-                await takeAreaScreenshot(area: rect)
+                await takeAreaScreenshot(
+                    area: rect,
+                    preparedCapture: capturePreparedBeforeSelection
+                )
             case .textCapture:
-                await performTextCapture(area: rect)
+                await performTextCapture(
+                    area: rect,
+                    preparedCapture: capturePreparedBeforeSelection
+                )
             case .translateCapture:
-                beginTranslation(area: rect)
+                beginTranslation(
+                    area: rect,
+                    preparedCapture: capturePreparedBeforeSelection
+                )
             }
         }
     }
 
     func onAreaSelectionCancelled() {
+        preparedAreaCapture = nil
         pendingCaptureAction = nil
     }
 
@@ -576,6 +591,7 @@ class AppState: ObservableObject {
         deviceManager.stopMonitoring()
         keyboardShortcutManager?.shutdown()
         keyboardShortcutManager = nil
+        preparedAreaCapture = nil
         areaSelectionController.closeOverlay()
         windowSelectionController.closeOverlay()
         recordingAreaOverlayController.closeOverlay()
@@ -632,16 +648,45 @@ class AppState: ObservableObject {
         return true
     }
 
-    func takeScreenshot(mode: CaptureMode) async {
-        guard await ensureReadyForCapture() else { return }
+    /// Enumerates ScreenCaptureKit once before the selector appears, then
+    /// derives every display filter from that exact snapshot. The resulting
+    /// filters can be used immediately after mouse-up without another window
+    /// enumeration, closing the race where the user could switch screens
+    /// before the screenshot request was issued.
+    private func makePreparedAreaCapture() async -> ScreenshotService.PreparedAreaCapture? {
+        guard permissionsManager.requestScreenRecordingPermission() else {
+            showErrorNotification("Enable Screen & System Audio Recording for Captr in System Settings, then quit and reopen Captr.")
+            return nil
+        }
 
+        guard let content = await captureEngine.refreshAvailableContent(onScreenWindowsOnly: false),
+              !captureEngine.availableDisplays.isEmpty,
+              let preparedCapture = ScreenshotService.prepareAreaCapture(from: content) else {
+            showErrorNotification(captureEngine.errorMessage ?? "No displays found. Please check screen recording permission in System Settings.")
+            return nil
+        }
+        return preparedCapture
+    }
+
+    private func prepareAreaSelection() async -> Bool {
+        preparedAreaCapture = nil
+        guard let preparedCapture = await makePreparedAreaCapture() else {
+            return false
+        }
+        self.preparedAreaCapture = preparedCapture
+        return true
+    }
+
+    func takeScreenshot(mode: CaptureMode) async {
         switch mode {
         case .fullScreen:
             await takeFullScreenScreenshot()
         case .window:
+            guard await ensureReadyForCapture() else { return }
             pendingCaptureAction = .screenshot
             showWindowSelection()
         case .area:
+            guard await prepareAreaSelection() else { return }
             pendingCaptureAction = .screenshot
             showAreaSelection()
         }
@@ -676,13 +721,24 @@ class AppState: ObservableObject {
         }
     }
 
-    func takeAreaScreenshot(area: CGRect) async {
-        guard await ensureReadyForCapture() else { return }
+    func takeAreaScreenshot(
+        area: CGRect,
+        preparedCapture: ScreenshotService.PreparedAreaCapture? = nil
+    ) async {
+        let capture: ScreenshotService.PreparedAreaCapture
+        if let preparedCapture {
+            capture = preparedCapture
+        } else {
+            guard let newlyPreparedCapture = await makePreparedAreaCapture() else { return }
+            capture = newlyPreparedCapture
+        }
 
-        let display = captureEngine.displayContaining(area)
-            ?? configuration.selectedDisplay
-            ?? captureEngine.availableDisplays.first
-        if let image = await withRecordingOverlayHidden({ await self.screenshotService.captureArea(display: display, area: area) }) {
+        if let image = await withRecordingOverlayHidden({
+            await self.screenshotService.captureArea(
+                preparedCapture: capture,
+                area: area
+            )
+        }) {
             copyImageToClipboard(image)
         } else if let error = screenshotService.errorMessage {
             showErrorNotification(error)
@@ -721,16 +777,25 @@ class AppState: ObservableObject {
     // MARK: - Text Capture Actions
 
     func startTextCapture() async {
-        guard await ensureReadyForCapture() else { return }
+        guard await prepareAreaSelection() else { return }
         pendingCaptureAction = .textCapture
         showAreaSelection()
     }
 
-    private func performTextCapture(area: CGRect) async {
-        let display = captureEngine.displayContaining(area)
-            ?? configuration.selectedDisplay
-            ?? captureEngine.availableDisplays.first
-        if let text = await withRecordingOverlayHidden({ await self.textCaptureService.captureAndRecognizeArea(display: display, area: area) }) {
+    private func performTextCapture(
+        area: CGRect,
+        preparedCapture: ScreenshotService.PreparedAreaCapture?
+    ) async {
+        let display = preparedCapture == nil
+            ? captureEngine.displayContaining(area) ?? configuration.selectedDisplay ?? captureEngine.availableDisplays.first
+            : nil
+        if let text = await withRecordingOverlayHidden({
+            await self.textCaptureService.captureAndRecognizeArea(
+                display: display,
+                preparedCapture: preparedCapture,
+                area: area
+            )
+        }) {
             TextCaptureService.copyToClipboard(text)
             showSaveNotification("Text copied to clipboard")
         } else {
@@ -739,7 +804,7 @@ class AppState: ObservableObject {
     }
 
     func startTranslateCapture() async {
-        guard await ensureReadyForCapture() else { return }
+        guard await prepareAreaSelection() else { return }
         cancelTranslationOperation(closeOverlay: true)
         // Mount the hidden translation panel while the user draws the
         // selection rectangle so the SwiftUI setup cost is hidden behind
@@ -749,13 +814,20 @@ class AppState: ObservableObject {
         showAreaSelection()
     }
 
-    private func beginTranslation(area: CGRect) {
+    private func beginTranslation(
+        area: CGRect,
+        preparedCapture: ScreenshotService.PreparedAreaCapture? = nil
+    ) {
         cancelTranslationOperation(closeOverlay: true)
         let operationID = UUID()
         translationOperationID = operationID
         translationTask = Task { [weak self] in
             guard let self else { return }
-            await self.performTranslateCapture(area: area, operationID: operationID)
+            await self.performTranslateCapture(
+                area: area,
+                preparedCapture: preparedCapture,
+                operationID: operationID
+            )
             if self.translationOperationID == operationID {
                 self.translationTask = nil
             }
@@ -775,14 +847,24 @@ class AppState: ObservableObject {
         translationOperationID == operationID && !Task.isCancelled
     }
 
-    private func performTranslateCapture(area: CGRect, operationID: UUID) async {
+    private func performTranslateCapture(
+        area: CGRect,
+        preparedCapture: ScreenshotService.PreparedAreaCapture?,
+        operationID: UUID
+    ) async {
         // Capture the screen area and run OCR first so we have an image to
         // drop into the overlay immediately — perceived latency stays tiny
         // while the translation step runs.
-        let display = captureEngine.displayContaining(area)
-            ?? configuration.selectedDisplay
-            ?? captureEngine.availableDisplays.first
-        guard let (cgImage, observations) = await withRecordingOverlayHidden({ await self.textCaptureService.captureObservations(display: display, area: area) }) else {
+        let display = preparedCapture == nil
+            ? captureEngine.displayContaining(area) ?? configuration.selectedDisplay ?? captureEngine.availableDisplays.first
+            : nil
+        guard let (cgImage, observations) = await withRecordingOverlayHidden({
+            await self.textCaptureService.captureObservations(
+                display: display,
+                preparedCapture: preparedCapture,
+                area: area
+            )
+        }) else {
             guard isCurrentTranslation(operationID) else { return }
             showErrorNotification(textCaptureService.errorMessage ?? "Failed to capture the selected area")
             return
@@ -867,10 +949,9 @@ class AppState: ObservableObject {
     }
 
     func captureScreenshot() async {
-        guard await ensureReadyForCapture() else { return }
-
         switch screenshotMode {
         case .fullScreen:
+            guard await ensureReadyForCapture() else { return }
             let display = captureEngine.displayForFullScreenCapture()
             if let image = await withRecordingOverlayHidden({ await self.screenshotService.captureFullScreen(display: display) }) {
                 copyImageToClipboard(image)
@@ -878,9 +959,11 @@ class AppState: ObservableObject {
                 showErrorNotification(error)
             }
         case .window:
+            guard await ensureReadyForCapture() else { return }
             pendingCaptureAction = .screenshot
             showWindowSelection()
         case .area:
+            guard await prepareAreaSelection() else { return }
             pendingCaptureAction = .screenshot
             showAreaSelection()
         }

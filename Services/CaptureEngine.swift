@@ -31,20 +31,30 @@ class CaptureEngine: NSObject, ObservableObject {
 
     var configuration = CaptureConfiguration()
 
-    func refreshAvailableContent() async {
+    /// Refreshes the cached capture targets and returns the exact
+    /// ScreenCaptureKit snapshot they came from. Area screenshots use the
+    /// returned snapshot to prepare their filter before the selection overlay
+    /// appears, avoiding another content enumeration after mouse-up.
+    @discardableResult
+    func refreshAvailableContent(onScreenWindowsOnly: Bool = true) async -> SCShareableContent? {
         errorMessage = nil
 
         do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: onScreenWindowsOnly
+            )
             availableDisplays = content.displays
             availableWindows = content.windows.filter { $0.isOnScreen && $0.title?.isEmpty == false }
             refreshSelectedCaptureTargets()
+            return content
         } catch {
             availableDisplays = []
             availableWindows = []
             configuration.selectedDisplay = nil
             configuration.selectedWindow = nil
             errorMessage = "Failed to get screen content: \(error.localizedDescription)"
+            return nil
         }
     }
 

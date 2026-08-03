@@ -16,10 +16,18 @@ struct RecognizedTextRegion: Sendable {
 class TextCaptureService: ObservableObject {
     @Published var errorMessage: String?
 
-    func captureAndRecognizeArea(display: SCDisplay?, area: CGRect) async -> String? {
+    func captureAndRecognizeArea(
+        display: SCDisplay?,
+        preparedCapture: ScreenshotService.PreparedAreaCapture? = nil,
+        area: CGRect
+    ) async -> String? {
         errorMessage = nil
 
-        guard let cgImage = await captureScreenArea(display: display, area: area) else {
+        guard let cgImage = await captureScreenArea(
+            display: display,
+            preparedCapture: preparedCapture,
+            area: area
+        ) else {
             return nil
         }
 
@@ -35,10 +43,18 @@ class TextCaptureService: ObservableObject {
     /// Captures the given screen area and returns the raw Vision observations
     /// alongside the source CGImage. Used by the in-place translation
     /// pipeline which needs per-segment bounding boxes, not assembled text.
-    func captureObservations(display: SCDisplay?, area: CGRect) async -> (CGImage, [RecognizedTextRegion])? {
+    func captureObservations(
+        display: SCDisplay?,
+        preparedCapture: ScreenshotService.PreparedAreaCapture? = nil,
+        area: CGRect
+    ) async -> (CGImage, [RecognizedTextRegion])? {
         errorMessage = nil
 
-        guard let cgImage = await captureScreenArea(display: display, area: area) else {
+        guard let cgImage = await captureScreenArea(
+            display: display,
+            preparedCapture: preparedCapture,
+            area: area
+        ) else {
             return nil
         }
 
@@ -46,8 +62,18 @@ class TextCaptureService: ObservableObject {
         return (cgImage, regions)
     }
 
-    private func captureScreenArea(display: SCDisplay?, area: CGRect) async -> CGImage? {
+    private func captureScreenArea(
+        display: SCDisplay?,
+        preparedCapture: ScreenshotService.PreparedAreaCapture?,
+        area: CGRect
+    ) async -> CGImage? {
         do {
+            if let preparedCapture {
+                return try await ScreenshotService.captureAreaCGImage(
+                    preparedCapture: preparedCapture,
+                    area: area
+                )
+            }
             return try await ScreenshotService.captureAreaCGImage(display: display, area: area)
         } catch {
             errorMessage = "Failed to capture the selected area: \(error.localizedDescription)"

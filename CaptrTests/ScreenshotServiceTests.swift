@@ -23,6 +23,50 @@ final class ScreenshotServiceTests: XCTestCase {
                           "errorMessage should be cleared at the start of a capture")
     }
 
+    // MARK: - Prepared area capture
+
+    func testPreparedAreaCapture_usesReadyCaptureWithoutAnotherPreparation() async throws {
+        let expectedImage = try makeTestCGImage()
+        let requestedArea = CGRect(x: 20, y: 30, width: 120, height: 80)
+        var capturedAreas: [CGRect] = []
+        let preparedCapture = ScreenshotService.PreparedAreaCapture(
+            displayIDs: [CGMainDisplayID()]
+        ) { area in
+            capturedAreas.append(area)
+            return expectedImage
+        }
+
+        let result = try await ScreenshotService.captureAreaCGImage(
+            preparedCapture: preparedCapture,
+            area: requestedArea
+        )
+
+        XCTAssertEqual(result.width, expectedImage.width)
+        XCTAssertEqual(result.height, expectedImage.height)
+        XCTAssertEqual(capturedAreas, [requestedArea])
+    }
+
+    func testPreparedAreaCapture_rejectsEmptyAreaBeforeCaptureRequest() async throws {
+        let expectedImage = try makeTestCGImage()
+        var captureRequestCount = 0
+        let preparedCapture = ScreenshotService.PreparedAreaCapture(
+            displayIDs: [CGMainDisplayID()]
+        ) { _ in
+            captureRequestCount += 1
+            return expectedImage
+        }
+
+        do {
+            _ = try await ScreenshotService.captureAreaCGImage(
+                preparedCapture: preparedCapture,
+                area: .zero
+            )
+            XCTFail("An empty selection should fail before requesting a screenshot")
+        } catch {
+            XCTAssertEqual(captureRequestCount, 0)
+        }
+    }
+
     // MARK: - errorMessage set on nil display
 
     func testCaptureFullScreen_nilDisplay_setsError() async throws {
@@ -190,5 +234,19 @@ final class ScreenshotServiceTests: XCTestCase {
             .appendingPathComponent("CaptrScreenshotTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    private func makeTestCGImage() throws -> CGImage {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(CGContext(
+            data: nil,
+            width: 2,
+            height: 2,
+            bitsPerComponent: 8,
+            bytesPerRow: 8,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        return try XCTUnwrap(context.makeImage())
     }
 }

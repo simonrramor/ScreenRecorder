@@ -2,6 +2,7 @@ import Foundation
 import ScreenCaptureKit
 import AppKit
 import CoreGraphics
+import os
 
 @MainActor
 class ScreenshotService: ObservableObject {
@@ -9,6 +10,32 @@ class ScreenshotService: ObservableObject {
     @Published var errorMessage: String?
 
     private let screenshotsDirectory: URL
+    private static let areaCaptureSignposter = OSSignposter(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.captr.app",
+        category: "AreaCapture"
+    )
+
+    /// A display and Dock-safe content filter built from one
+    /// `SCShareableContent` snapshot. AppState creates this before showing the
+    /// area selector so mouse-up can go straight to `SCScreenshotManager`
+    /// without enumerating the current window list again.
+    struct PreparedAreaCapture {
+        let displayIDs: Set<CGDirectDisplayID>
+        fileprivate let captureImage: @MainActor (CGRect) async throws -> CGImage
+
+        init(
+            displayIDs: Set<CGDirectDisplayID>,
+            captureImage: @escaping @MainActor (CGRect) async throws -> CGImage
+        ) {
+            self.displayIDs = displayIDs
+            self.captureImage = captureImage
+        }
+    }
+
+    private struct PreparedAreaTarget {
+        let display: SCDisplay
+        let filter: SCContentFilter
+    }
 
     init(screenshotsDirectory: URL? = nil) {
         self.screenshotsDirectory = screenshotsDirectory ?? MediaLibraryManager.screenshotsDirectory
@@ -103,6 +130,31 @@ class ScreenshotService: ObservableObject {
             ) == .excludeWindow
         }
         return SCContentFilter(display: display, excludingWindows: transientWindows)
+    }
+
+    /// Creates all per-display filters from the same content snapshot that
+    /// populated CaptureEngine. Filters remain live while the selection UI is
+    /// open: newly-created Dock overlays still belong to the excluded Dock
+    /// application and therefore never become part of the capture.
+    static func prepareAreaCapture(from content: SCShareableContent) -> PreparedAreaCapture? {
+        let targets = content.displays.map { display in
+            PreparedAreaTarget(
+                display: display,
+                filter: displayFilterExcludingDockOverlays(for: display, in: content)
+            )
+        }
+        guard !targets.isEmpty else { return nil }
+        return PreparedAreaCapture(
+            displayIDs: Set(targets.map { $0.display.displayID })
+        ) { area in
+            guard let display = ScreenGeometry.bestDisplay(
+                for: area,
+                in: targets.map(\.display)
+            ), let target = targets.first(where: { $0.display.displayID == display.displayID }) else {
+                throw NSError(domain: "ScreenshotService", code: 3, userInfo: [NSLocalizedDescriptionKey: "Selected display is no longer available"])
+            }
+            return try await captureAreaCGImage(target: target, area: area)
+        }
     }
 
     private static func currentDockExclusion() async -> DockExclusion? {
@@ -274,15 +326,35 @@ class ScreenshotService: ObservableObject {
         }
     }
 
+    /// Fast path used after area selection. The prepared filter was created
+    /// before the overlay appeared, so this method performs no shareable-
+    /// content enumeration between mouse-up and the screenshot request.
+    func captureArea(preparedCapture: PreparedAreaCapture, area: CGRect) async -> NSImage? {
+        errorMessage = nil
+
+        do {
+            let cgImage = try await Self.captureAreaCGImage(
+                preparedCapture: preparedCapture,
+                area: area
+            )
+            let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: area.width, height: area.height))
+            lastScreenshot = nsImage
+            return nsImage
+        } catch {
+            errorMessage = "Area screenshot failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// Captures an area of the screen using ScreenCaptureKit. Used by both the
     /// area-screenshot path and the OCR/translation pipeline so neither has to
     /// touch the deprecated CGWindowListCreateImage (which triggers monthly
     /// permission re-prompts on macOS 15+).
     ///
-    /// The display and filter must come from the same fresh content snapshot.
-    /// Mixing a cached display with newer window state can make
-    /// ScreenCaptureKit omit the frontmost window and reveal the content
-    /// underneath it.
+    /// Fallback path for callers that do not have a prepared capture. The
+    /// display and filter must come from the same fresh content snapshot.
+    /// Interactive area capture prepares this snapshot before selection so it
+    /// does not pay this enumeration cost after mouse-up.
     static func captureAreaCGImage(display: SCDisplay?, area: CGRect) async throws -> CGImage {
         guard let display = display else {
             throw NSError(domain: "ScreenshotService", code: 1, userInfo: [NSLocalizedDescriptionKey: "No display available"])
@@ -306,15 +378,35 @@ class ScreenshotService: ObservableObject {
         }
 
         let filter = Self.displayFilterExcludingDockOverlays(for: freshDisplay, in: content)
+        let target = PreparedAreaTarget(display: freshDisplay, filter: filter)
+        return try await captureAreaCGImage(target: target, area: screenRect)
+    }
+
+    static func captureAreaCGImage(
+        preparedCapture: PreparedAreaCapture,
+        area: CGRect
+    ) async throws -> CGImage {
+        let screenRect = area.standardized
+        guard screenRect.width > 0, screenRect.height > 0 else {
+            throw NSError(domain: "ScreenshotService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Selected area is empty"])
+        }
+        return try await preparedCapture.captureImage(screenRect)
+    }
+
+    private static func captureAreaCGImage(
+        target: PreparedAreaTarget,
+        area screenRect: CGRect
+    ) async throws -> CGImage {
+        let display = target.display
         let config = SCStreamConfiguration()
         guard let localRect = ScreenGeometry.integralDisplayLocalRect(
             for: screenRect,
-            displayID: freshDisplay.displayID
+            displayID: display.displayID
         ) else {
             throw NSError(domain: "ScreenshotService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Selected area is outside the captured display"])
         }
 
-        let scale = ScreenGeometry.backingScale(for: freshDisplay.displayID) ?? 2.0
+        let scale = ScreenGeometry.backingScale(for: display.displayID) ?? 2.0
         config.sourceRect = localRect
         config.width = max(1, Int(localRect.width * scale))
         config.height = max(1, Int(localRect.height * scale))
@@ -322,8 +414,17 @@ class ScreenshotService: ObservableObject {
         config.capturesAudio = false
         config.pixelFormat = kCVPixelFormatType_32BGRA
 
+        let signpostID = areaCaptureSignposter.makeSignpostID()
+        let interval = areaCaptureSignposter.beginInterval(
+            "Prepared Area Screenshot",
+            id: signpostID
+        )
+        defer {
+            areaCaptureSignposter.endInterval("Prepared Area Screenshot", interval)
+        }
+
         return try await SCScreenshotManager.captureImage(
-            contentFilter: filter,
+            contentFilter: target.filter,
             configuration: config
         )
     }
