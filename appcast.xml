@@ -6,6 +6,22 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.18</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Capture the selected area immediately on mouse-up so changing screens cannot alter the result.\n- Reuse prepared ScreenCaptureKit filters for screenshots, text capture, and translation.\n- Keep transient Dock overlays out of area captures without delaying the screenshot request.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Mon, 03 Aug 2026 17:14:51 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.18/Captr.dmg"
+                       sparkle:version="44"
+                       sparkle:shortVersionString="1.4.18"
+                       sparkle:edSignature="yuQnGEqxZ+EKGzHmaj0TURF8fbbiaFwViFmRvefjDnLDS2JXYCr1QFrkPpEpTlFrSwHxo9tVH6xsK/ZA7+5JAA=="
+                       length="2574084"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.17</title>
             <description><![CDATA[
                 <ul>
