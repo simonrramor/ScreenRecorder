@@ -6,6 +6,23 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.17</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Prevent the macOS Command-Tab app switcher and other transient Dock overlays from appearing in image captures.</li>
+                    <li>Preserve the frontmost window, wallpaper, and pinned Dock while filtering captures.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Mon, 03 Aug 2026 15:20:22 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.17/Captr.dmg"
+                       sparkle:version="43"
+                       sparkle:shortVersionString="1.4.17"
+                       sparkle:edSignature="1Cnq2vyXr+ucF8C0DEbLgi0C9vuiYyga2Jj8rk9qsaprlvcflAUwHTGV956iclOP8N1757ROTVTJqX7QXuAPAw=="
+                       length="2559163"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.16</title>
             <description><![CDATA[
                 <ul>
