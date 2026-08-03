@@ -140,6 +140,51 @@ final class ScreenshotServiceTests: XCTestCase {
         XCTAssertFalse(ScreenshotService.shouldExceptDockWindow(layer: 101, dockAutoHides: false, dockLevel: dockLevel))
     }
 
+    func testSameSnapshotFilterExcludesAppSwitcherWithDockApplication() {
+        XCTAssertEqual(
+            ScreenshotService.dockWindowFilterDisposition(
+                layer: 101,
+                dockAutoHides: false,
+                dockLevel: dockLevel,
+                dockApplicationAvailable: true
+            ),
+            .excludedWithApplication
+        )
+    }
+
+    func testSameSnapshotFilterExcludesAppSwitcherWithoutDockApplicationMetadata() {
+        XCTAssertEqual(
+            ScreenshotService.dockWindowFilterDisposition(
+                layer: 101,
+                dockAutoHides: false,
+                dockLevel: dockLevel,
+                dockApplicationAvailable: false
+            ),
+            .excludeWindow
+        )
+    }
+
+    func testSameSnapshotFilterKeepsPinnedDockAndWallpaper() {
+        XCTAssertEqual(
+            ScreenshotService.dockWindowFilterDisposition(
+                layer: dockLevel,
+                dockAutoHides: false,
+                dockLevel: dockLevel,
+                dockApplicationAvailable: true
+            ),
+            .exceptFromApplicationExclusion
+        )
+        XCTAssertEqual(
+            ScreenshotService.dockWindowFilterDisposition(
+                layer: -1,
+                dockAutoHides: true,
+                dockLevel: dockLevel,
+                dockApplicationAvailable: true
+            ),
+            .exceptFromApplicationExclusion
+        )
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CaptrScreenshotTests-\(UUID().uuidString)", isDirectory: true)

@@ -35,6 +35,13 @@ class ScreenshotService: ObservableObject {
         let dockWasAutoHidden: Bool
     }
 
+    enum DockWindowFilterDisposition: Equatable {
+        case exceptFromApplicationExclusion
+        case excludedWithApplication
+        case excludeWindow
+        case unchanged
+    }
+
     private static var cachedDockExclusion: DockExclusion?
 
     private static var dockAutoHides: Bool {
@@ -50,6 +57,52 @@ class ScreenshotService: ObservableObject {
             excludingApplications: [exclusion.application],
             exceptingWindows: exclusion.exceptedWindows
         )
+    }
+
+    /// Builds a Dock-safe filter entirely from one shareable-content snapshot.
+    /// Area capture must not mix its fresh display with cached SCWindow handles:
+    /// that can hide the frontmost window. Excluding the Dock application and
+    /// re-including only its stable windows removes the app switcher and other
+    /// transient chrome without reintroducing that stale-window bug.
+    static func displayFilterExcludingDockOverlays(
+        for display: SCDisplay,
+        in content: SCShareableContent
+    ) -> SCContentFilter {
+        let dockWindows = content.windows.filter {
+            $0.owningApplication?.bundleIdentifier == "com.apple.dock"
+        }
+        let dockLevel = Int(CGWindowLevelForKey(.dockWindow))
+        let autoHides = dockAutoHides
+
+        let dockApp = content.applications.first(where: { $0.bundleIdentifier == "com.apple.dock" })
+        if let dockApp {
+            let stableWindows = dockWindows.filter {
+                dockWindowFilterDisposition(
+                    layer: $0.windowLayer,
+                    dockAutoHides: autoHides,
+                    dockLevel: dockLevel,
+                    dockApplicationAvailable: true
+                ) == .exceptFromApplicationExclusion
+            }
+            return SCContentFilter(
+                display: display,
+                excludingApplications: [dockApp],
+                exceptingWindows: stableWindows
+            )
+        }
+
+        // The application metadata should always be present when Dock chrome
+        // is visible. If it is not, still exclude every transient Dock window
+        // that was discoverable in this snapshot.
+        let transientWindows = dockWindows.filter {
+            dockWindowFilterDisposition(
+                layer: $0.windowLayer,
+                dockAutoHides: autoHides,
+                dockLevel: dockLevel,
+                dockApplicationAvailable: false
+            ) == .excludeWindow
+        }
+        return SCContentFilter(display: display, excludingWindows: transientWindows)
     }
 
     private static func currentDockExclusion() async -> DockExclusion? {
@@ -101,6 +154,24 @@ class ScreenshotService: ObservableObject {
         layer < 0 || (!dockAutoHides && layer == dockLevel)
     }
 
+    static func dockWindowFilterDisposition(
+        layer: Int,
+        dockAutoHides: Bool,
+        dockLevel: Int,
+        dockApplicationAvailable: Bool
+    ) -> DockWindowFilterDisposition {
+        let isStableWindow = shouldExceptDockWindow(
+            layer: layer,
+            dockAutoHides: dockAutoHides,
+            dockLevel: dockLevel
+        )
+
+        if dockApplicationAvailable {
+            return isStableWindow ? .exceptFromApplicationExclusion : .excludedWithApplication
+        }
+        return isStableWindow ? .unchanged : .excludeWindow
+    }
+
     @discardableResult
     private static func refreshDockExclusion() async -> DockExclusion? {
         // onScreenWindowsOnly must be false: an auto-hidden Dock bar sits
@@ -117,13 +188,6 @@ class ScreenshotService: ObservableObject {
         let excepted = content.windows.filter { window in
             window.owningApplication?.bundleIdentifier == "com.apple.dock"
                 && shouldExceptDockWindow(layer: window.windowLayer, dockAutoHides: autoHides, dockLevel: dockLevel)
-        }
-
-        // Without the wallpaper windows identified, excluding the Dock app
-        // would punch the desktop picture out of shots — skip exclusion.
-        guard !excepted.isEmpty else {
-            cachedDockExclusion = nil
-            return nil
         }
 
         cachedDockExclusion = DockExclusion(
@@ -241,7 +305,7 @@ class ScreenshotService: ObservableObject {
             throw NSError(domain: "ScreenshotService", code: 3, userInfo: [NSLocalizedDescriptionKey: "Selected display is no longer available"])
         }
 
-        let filter = SCContentFilter(display: freshDisplay, excludingWindows: [])
+        let filter = Self.displayFilterExcludingDockOverlays(for: freshDisplay, in: content)
         let config = SCStreamConfiguration()
         guard let localRect = ScreenGeometry.integralDisplayLocalRect(
             for: screenRect,
