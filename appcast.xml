@@ -6,6 +6,23 @@
         <description>Captr updates</description>
         <language>en</language>
         <item>
+            <title>Version 1.4.19</title>
+            <description><![CDATA[
+                <ul>
+                    <li>Recover Apple screenshot translations by rebuilding and retrying stale on-device sessions.</li>
+                    <li>Show the specific Apple Translation failure reason when a screenshot cannot be translated.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Fri, 21 Aug 2026 10:11:29 +0000</pubDate>
+            <enclosure url="https://github.com/simonrramor/captr/releases/download/v1.4.19/Captr.dmg"
+                       sparkle:version="45"
+                       sparkle:shortVersionString="1.4.19"
+                       sparkle:edSignature="9Y++qQibkj9rstBs46flEJsUNRLseLcuCKvrUUJ/reUMlFzU7hqlnRLL0jW9Po+t+8UnlSTel7OhuzwFLBxWBQ=="
+                       length="2582548"
+                       type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>Version 1.4.18</title>
             <description><![CDATA[
                 <ul>
