@@ -23,6 +23,26 @@ extension TranslationProvider {
     func prewarm() {}
 }
 
+/// Picks the useful detail out of errors whose localized description is only
+/// a generic heading. Apple's Translation framework, for example, reports
+/// "Unable to Translate" as the description and puts the actionable reason in
+/// `failureReason`.
+enum TranslationFailureMessage {
+    static func message(for error: Error) -> String {
+        let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let localized = error as? LocalizedError
+        let reason = (localized?.failureReason ?? (error as NSError).localizedFailureReason)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let reason,
+           !reason.isEmpty,
+           reason.localizedCaseInsensitiveCompare(description) != .orderedSame {
+            return reason
+        }
+        return description
+    }
+}
+
 /// Errors a provider can surface to the UI with friendlier messaging than raw
 /// `localizedDescription` from system frameworks.
 enum TranslationProviderError: LocalizedError {

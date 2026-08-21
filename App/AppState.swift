@@ -914,7 +914,7 @@ class AppState: ObservableObject {
             return
         } catch {
             guard isCurrentTranslation(operationID) else { return }
-            translationOverlayController.showFailed(message: error.localizedDescription) { [weak self] in
+            translationOverlayController.showFailed(message: TranslationFailureMessage.message(for: error)) { [weak self] in
                 self?.beginTranslation(area: area)
             }
             return

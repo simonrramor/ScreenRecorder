@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 @preconcurrency import Translation
 import AppKit
+import os
 
 /// Drives Apple's on-device `Translation` framework from a long-lived hidden
 /// NSPanel so that back-to-back translations of the same language pair reuse
@@ -12,6 +13,11 @@ import AppKit
 final class AppleTranslationProvider: TranslationProvider {
     let displayName = "Apple"
 
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.captr.app",
+        category: "Translation"
+    )
+
     private var panel: NSPanel?
     private let coordinator = TranslationCoordinator()
 
@@ -21,7 +27,21 @@ final class AppleTranslationProvider: TranslationProvider {
 
     func translate(_ text: String, from source: Locale.Language, to target: Locale.Language) async throws -> String {
         ensurePanel()
-        return try await coordinator.submit(text: text, source: source, target: target)
+        do {
+            return try await AppleTranslationRetryPolicy.perform({
+                try await coordinator.submit(text: text, source: source, target: target)
+            }, beforeRetry: { error in
+                Self.logger.notice(
+                    "Resetting Apple translation session after failure from \(source.maximalIdentifier, privacy: .public) to \(target.maximalIdentifier, privacy: .public): \(TranslationFailureMessage.message(for: error), privacy: .public)"
+                )
+                coordinator.resetSession()
+            })
+        } catch {
+            Self.logger.error(
+                "Apple translation failed from \(source.maximalIdentifier, privacy: .public) to \(target.maximalIdentifier, privacy: .public): \(TranslationFailureMessage.message(for: error), privacy: .public)"
+            )
+            throw error
+        }
     }
 
     private func ensurePanel() {
@@ -51,6 +71,38 @@ final class AppleTranslationProvider: TranslationProvider {
     }
 }
 
+// MARK: - Retry policy
+
+enum AppleTranslationRetryPolicy {
+    /// A stale framework session can fail even though its language pair and
+    /// assets are valid. Rebuild that session and retry once, but don't repeat
+    /// failures that cannot be repaired by a fresh session.
+    static func shouldRetry(after error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if TranslationError.unsupportedSourceLanguage ~= error { return false }
+        if TranslationError.unsupportedTargetLanguage ~= error { return false }
+        if TranslationError.unsupportedLanguagePairing ~= error { return false }
+        if TranslationError.nothingToTranslate ~= error { return false }
+        if #available(macOS 26.0, *), TranslationError.alreadyCancelled ~= error { return false }
+        return true
+    }
+
+    @MainActor
+    static func perform<Result>(
+        _ operation: () async throws -> Result,
+        beforeRetry: (Error) -> Void
+    ) async throws -> Result {
+        do {
+            return try await operation()
+        } catch {
+            guard shouldRetry(after: error) else { throw error }
+            beforeRetry(error)
+            try Task.checkCancellation()
+            return try await operation()
+        }
+    }
+}
+
 // MARK: - Coordinator
 
 @MainActor
@@ -68,6 +120,7 @@ private class TranslationCoordinator: ObservableObject {
     private var currentSourceID: String?
     private var currentTargetID: String?
     private var streamGeneration = UUID()
+    private var shouldInvalidateConfiguration = false
     private var pending: [UUID: (generation: UUID, continuation: CheckedContinuation<String, Error>)] = [:]
 
     func submit(text: String, source: Locale.Language, target: Locale.Language) async throws -> String {
@@ -92,7 +145,14 @@ private class TranslationCoordinator: ObservableObject {
                     streamContinuation = newContinuation
                     currentSourceID = sourceID
                     currentTargetID = targetID
-                    config = .init(source: source, target: target)
+                    if shouldInvalidateConfiguration,
+                       config?.source?.maximalIdentifier == sourceID,
+                       config?.target?.maximalIdentifier == targetID {
+                        config?.invalidate()
+                    } else {
+                        config = .init(source: source, target: target)
+                    }
+                    shouldInvalidateConfiguration = false
                 }
 
                 let generation = streamGeneration
@@ -104,6 +164,19 @@ private class TranslationCoordinator: ObservableObject {
                 self?.cancel(requestID: requestID)
             }
         }
+    }
+
+    /// Ends the stream owned by the failed TranslationSession. The next
+    /// submission creates a new stream and invalidates the SwiftUI
+    /// configuration, forcing `.translationTask` to provide a fresh session
+    /// even when the language pair has not changed.
+    func resetSession() {
+        let previousGeneration = streamGeneration
+        streamContinuation?.finish()
+        stream = nil
+        streamContinuation = nil
+        cancelRequests(for: previousGeneration)
+        shouldInvalidateConfiguration = true
     }
 
     func complete(_ request: Request, with result: Result<String, Error>) {
